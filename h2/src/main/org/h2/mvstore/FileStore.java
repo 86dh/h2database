@@ -827,18 +827,7 @@ public abstract class FileStore<C extends Chunk<C>>
         assert serializationLock.isHeldByCurrentThread();
         // chunk's location has to be determined before
         // it's metadata can be is serialized
-        while (!chunk.isAllocated()) {
-            saveChunkLock.lock();
-            try {
-                if (chunk.isAllocated()) {
-                    break;
-                }
-            } finally {
-                saveChunkLock.unlock();
-            }
-            // just let chunks saving thread to deal with it
-            Thread.yield();
-        }
+        assert chunk.isAllocated();
         layout.put(Chunk.getMetaKey(chunk.id), chunk.asString());
     }
 
@@ -1470,7 +1459,7 @@ public abstract class FileStore<C extends Chunk<C>>
 
         acceptChunkOccupancyChanges(c.time, version);
 
-        if (previousChunk != null) {
+        if (previousChunk != null && previousChunk.isAllocated()) {
             // the metadata of the last chunk was not stored in the layout map yet,
             // just was embedded into the chunk itself, and this need to be done now
             // (it's better not to update right after storing, because that
@@ -1549,6 +1538,7 @@ public abstract class FileStore<C extends Chunk<C>>
         assert serializationLock.isHeldByCurrentThread();
         if (hasPersistentData()) {
             Set<C> modifiedChunks = new HashSet<>();
+            List<RemovedPageInfo> unallocatedChunksRPI = new ArrayList<>();
             while (true) {
                 RemovedPageInfo rpi;
                 while ((rpi = removedPages.peek()) != null && rpi.version < version) {
@@ -1559,14 +1549,19 @@ public abstract class FileStore<C extends Chunk<C>>
                     C chunk = chunks.get(chunkId);
                     assert !mvStore.isOpen() || chunk != null : chunkId;
                     if (chunk != null) {
-                        modifiedChunks.add(chunk);
-                        if (chunk.accountForRemovedPage(rpi.getPageNo(), rpi.getPageLength(),
-                                rpi.isPinned(), time, rpi.version)) {
-                            registerDeadChunk(chunk);
+                        if (chunk.isAllocated()) {
+                            modifiedChunks.add(chunk);
+                            if (chunk.accountForRemovedPage(rpi.getPageNo(), rpi.getPageLength(),
+                                    rpi.isPinned(), time, rpi.version)) {
+                                registerDeadChunk(chunk);
+                            }
+                        } else {
+                            unallocatedChunksRPI.add(rpi);
                         }
                     }
                 }
                 if (modifiedChunks.isEmpty()) {
+                    unallocatedChunksRPI.forEach(removedPages::offer);
                     return;
                 }
                 for (C chunk : modifiedChunks) {
