@@ -1825,6 +1825,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
                                 K k = p.getKey(at);
                                 Page<K,V> split = p.split(at);
                                 unsavedMemoryHolder.value += p.getMemory() + split.getMemory();
+                                // if root was split, create a new root with two children (increase tree height)
                                 if (pos == null) {
                                     K[] keys = p.createKeyStorage(1);
                                     keys[0] = k;
@@ -1878,6 +1879,8 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         }
     }
 
+    private static final int CPU_COUNT = Runtime.getRuntime().availableProcessors();
+
     /**
      * Try to lock the root.
      *
@@ -1893,23 +1896,18 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         assert !rootReference.isLockedByCurrentThread() : rootReference;
         RootReference<K,V> oldRootReference = rootReference.previous;
 
-        if(attempt > 4) {
-            int contention = estimateContention(rootReference, oldRootReference);
-            if (attempt <= 12) {
+        if (attempt < CPU_COUNT) {
+            Thread.onSpinWait();
+        } else {
+            int estimatedContention = estimateContention(rootReference, oldRootReference);
+            if (attempt < CPU_COUNT + (CPU_COUNT + estimatedContention) / 2) {
                 Thread.yield();
-            } else if (attempt <= 70 - 2 * contention) {
-                try {
-                    Thread.sleep(contention);
-                } catch (InterruptedException ex) {
-                    throw new RuntimeException(ex);
-                }
             } else {
                 synchronized (lock) {
                     notificationRequested = true;
                     try {
-                        lock.wait(5);
-                    } catch (InterruptedException ignore) {
-                    }
+                        lock.wait(1);
+                    } catch (InterruptedException ignore) {/**/}
                 }
             }
         }
