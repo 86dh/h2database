@@ -50,17 +50,45 @@ public final class CursorPos<K,V> {
      * @param key       the key to search for
      * @return head of the CursorPos chain (insertion point)
      */
-    static <K,V> CursorPos<K,V> traverseDown(Page<K,V> page, K key) {
+    static <K,V> CursorPos<K,V> traverseDown(Page<K,V> page, K key, CursorPos<K,V> existing) {
+        if (existing != null) {
+            assert existing.page.isLeaf();
+            existing = existing.reverse(null);
+        }
         CursorPos<K,V> cursorPos = null;
-        while (!page.isLeaf()) {
-            int index = page.binarySearch(key) + 1;
-            if (index < 0) {
-                index = -index;
+        for(;;) {
+            int index;
+            if (existing == null) {
+                index = page.calculateTraversalIndex(key);
+                cursorPos = new CursorPos<>(page, index, cursorPos);
+            } else {
+                Page<K, V> existinPage = existing.page;
+                if (existinPage == page) {
+                    // If we hit exactly the same page, as previous time, that means that subtree under this page
+                    // also hasn't been modified since last attempt. Further traversal therefore is going to follow
+                    // exactly same path, so lets just copy it from existing CursopPos chain
+                    cursorPos = existing.reverse(cursorPos);
+                    assert cursorPos.page.isLeaf();
+                    return cursorPos;
+                }
+                CursorPos<K, V> temp = existing.parent;
+                existing.parent = cursorPos;
+                existing.page = page;
+                cursorPos = existing;
+                existing = temp;
+                // if we hit page with exact set of keys, as last time,
+                // there is no need to do a key search again, use previous result
+                if (!page.sameKeys(existinPage)) {
+                    cursorPos.index = page.calculateTraversalIndex(key);
+                }
+                index = cursorPos.index;
             }
-            cursorPos = new CursorPos<>(page, index, cursorPos);
+            if (page.isLeaf()) {
+                assert cursorPos.page.isLeaf();
+                return cursorPos;
+            }
             page = page.getChildPage(index);
         }
-        return new CursorPos<>(page, page.binarySearch(key), cursorPos);
     }
 
     /**
@@ -75,6 +103,12 @@ public final class CursorPos<K,V> {
             unsavedMemory += head.page.removePage(version);
         }
         return unsavedMemory;
+    }
+
+    private CursorPos<K,V> reverse(CursorPos<K,V> alreadyReversed) {
+        CursorPos<K, V> reversed = parent == null ? this : parent.reverse(this);
+        parent = alreadyReversed;
+        return reversed;
     }
 
     @Override

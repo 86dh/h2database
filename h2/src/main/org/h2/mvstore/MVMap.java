@@ -1731,6 +1731,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      * @return previous value, if mapping for that key existed, or null otherwise
      */
     public V operate(K key, V value, DecisionMaker<? super V> decisionMaker) {
+        CursorPos<K,V> tip = null;
         IntValueHolder unsavedMemoryHolder = new IntValueHolder();
         int attempt = 0;
         while(true) {
@@ -1740,25 +1741,23 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
                 if (attempt++ == 0) {
                     beforeWrite();
                 }
-                if (attempt > 3 || rootReference.isLocked()) {
+                if (attempt > 5 || rootReference.isLocked()) {
                     rootReference = lockRoot(rootReference, attempt);
                     locked = true;
                 }
             }
             Page<K,V> rootPage = rootReference.root;
             long version = rootReference.version;
-            CursorPos<K,V> tip;
             V result;
             unsavedMemoryHolder.value = 0;
             try {
-                CursorPos<K,V> pos = CursorPos.traverseDown(rootPage, key);
+                tip = CursorPos.traverseDown(rootPage, key, tip);
                 if (!locked && rootReference != getRoot()) {
                     continue;
                 }
-                Page<K,V> p = pos.page;
-                int index = pos.index;
-                tip = pos;
-                pos = pos.parent;
+                Page<K,V> p = tip.page;
+                int index = tip.index;
+                CursorPos<K,V> pos = tip.parent;
                 result = index < 0 ? null : p.getValue(index);
                 Decision decision = decisionMaker.decide(result, value, tip);
 
