@@ -6,7 +6,6 @@
 package org.h2.mvstore.tx;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +26,7 @@ import org.h2.mvstore.type.MetaType;
 import org.h2.mvstore.type.ObjectDataType;
 import org.h2.mvstore.type.StringDataType;
 import org.h2.util.StringUtils;
+import org.h2.util.Utils;
 import org.h2.value.VersionedValue;
 
 /**
@@ -63,7 +63,7 @@ public class TransactionStore {
      * Key: opId, value: [ mapId, key, oldValue ].
      */
     @SuppressWarnings("unchecked")
-    private final MVMap<Long,Record<?,?>>[] undoLogs = new MVMap[MAX_OPEN_TRANSACTIONS];
+    private final MVMap<Long,Record<?,?>>[] undoLogs = new MVMap[MAX_OPEN_TRANSACTIONS+1];
     private final MVMap.Builder<Long, Record<?,?>> undoLogBuilder;
 
     private final DataType<?> dataType;
@@ -115,8 +115,7 @@ public class TransactionStore {
     /**
      * Hard limit on the number of concurrently opened transactions
      */
-    // TODO: introduce constructor parameter instead of a static field, driven by URL parameter
-    private static final int MAX_OPEN_TRANSACTIONS = 65535;
+    private static final int MAX_OPEN_TRANSACTIONS = Utils.getProperty("h2.maxOpenTransactions", 255);
 
     /**
      * Generate a string used to name undo log map for a specific transaction.
