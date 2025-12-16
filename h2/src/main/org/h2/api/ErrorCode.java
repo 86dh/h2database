@@ -404,8 +404,8 @@ public class ErrorCode {
 
     /**
      * The error with code <code>42104</code> is thrown when
-     * trying to query, modify or drop a table or view that does not exists
-     * in this schema and database but it is empty anyway. A common cause is
+     * trying to query, modify or drop a table or view that does not exist
+     * in this schema and database, but it is empty anyway. A common cause is
      * that the wrong database was opened.
      * Example:
      * <pre>

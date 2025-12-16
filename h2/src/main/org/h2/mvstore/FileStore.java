@@ -169,6 +169,12 @@ public abstract class FileStore<C extends Chunk<C>>
      */
     protected volatile C lastChunk;
 
+    /**
+     * Identifier of the last created chunk.
+     * It is different from {@link lastChunk.id}, because process is pipelined -
+     * chunk creation / serialization and space allocation / save are handled
+     * by two dedicated threads, therefore more than one chunk might be in that pipeline.
+     */
     private int lastChunkId;   // protected by serializationLock
 
     protected final ReentrantLock saveChunkLock = new ReentrantLock(true);
@@ -176,7 +182,7 @@ public abstract class FileStore<C extends Chunk<C>>
     /**
      * The map of chunks.
      */
-    final ConcurrentHashMap<Integer, C> chunks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, C> chunks = new ConcurrentHashMap<>();
 
     protected final HashMap<String, Object> storeHeader = new HashMap<>();
 
@@ -280,7 +286,9 @@ public abstract class FileStore<C extends Chunk<C>>
     }
 
     public void close() {
-        layout.close();
+        if (layout != null) {
+            layout.close();
+        }
         closed = true;
         chunks.clear();
     }
@@ -627,6 +635,7 @@ public abstract class FileStore<C extends Chunk<C>>
     }
 
     protected final void setLastChunk(C last) {
+        assert serializationLock.isHeldByCurrentThread();
         lastChunk = last;
         chunks.clear();
         lastChunkId = 0;
@@ -899,23 +908,29 @@ public abstract class FileStore<C extends Chunk<C>>
 
 
     public MVMap<String, String> start() {
-        if (size() == 0) {
-            initializeCommonHeaderAttributes(mvStore.getTimeAbsolute());
-            initializeStoreHeader(mvStore.getTimeAbsolute());
-        } else {
-            saveChunkLock.lock();
-            try {
-                readStoreHeader(recoveryMode);
-            } finally {
-                saveChunkLock.unlock();
+        // locking is not strictly neccessary here in startup flow, just to make assertions happy
+        serializationLock.lock();
+        try {
+            if (size() == 0) {
+                initializeCommonHeaderAttributes(mvStore.getTimeAbsolute());
+                initializeStoreHeader(mvStore.getTimeAbsolute());
+            } else {
+                saveChunkLock.lock();
+                try {
+                    readStoreHeader(recoveryMode);
+                } finally {
+                    saveChunkLock.unlock();
+                }
             }
+            lastCommitTime = getTimeSinceCreation();
+            mvStore.resetLastMapId(lastMapId());
+            mvStore.setCurrentVersion(lastChunkVersion());
+            MVMap<String, String> metaMap = mvStore.openMetaMap();
+            scrubLayoutMap(metaMap);
+            return metaMap;
+        } finally {
+            serializationLock.unlock();
         }
-        lastCommitTime = getTimeSinceCreation();
-        mvStore.resetLastMapId(lastMapId());
-        mvStore.setCurrentVersion(lastChunkVersion());
-        MVMap<String, String> metaMap = mvStore.openMetaMap();
-        scrubLayoutMap(metaMap);
-        return metaMap;
     }
 
     protected abstract void initializeStoreHeader(long time);
@@ -1361,43 +1376,31 @@ public abstract class FileStore<C extends Chunk<C>>
         }
     }
 
-    private int serializationExecutorHWM;
-
-
     final void storeIt(ArrayList<Page<?,?>> changed, long version, boolean syncWrite) throws ExecutionException {
         lastCommitTime = getTimeSinceCreation();
-        serializationExecutorHWM = submitOrRun(serializationExecutor,
+        submitOrRun(serializationExecutor,
                 () -> serializeAndStore(syncWrite, changed, lastCommitTime, version),
-                syncWrite, PIPE_LENGTH, serializationExecutorHWM);
+                syncWrite, PIPE_LENGTH);
     }
 
-    private static int submitOrRun(ThreadPoolExecutor executor, Runnable action,
-                                    boolean syncRun, int threshold, int hwm) throws ExecutionException {
+    public static void submitOrRun(ThreadPoolExecutor executor, Runnable action,
+                                    boolean syncRun, int threshold) throws ExecutionException {
         if (executor != null) {
             try {
                 Future<?> future = executor.submit(action);
-                int size = executor.getQueue().size();
-                if (size > hwm) {
-                    hwm = size;
-//                    System.err.println(executor + " HWM: " + hwm);
-                }
-                if (syncRun || size > threshold) {
+                if (syncRun || executor.getQueue().size() > threshold) {
                     try {
                         future.get();
                     } catch (InterruptedException ignore) {/**/}
                 }
-                return hwm;
+                return;
             } catch (RejectedExecutionException ex) {
-                assert executor.isShutdown();
                 Utils.shutdownExecutor(executor);
             }
         }
         action.run();
-        return hwm;
     }
 
-
-    private int bufferSaveExecutorHWM;
 
     private void serializeAndStore(boolean syncRun, ArrayList<Page<?,?>> changed, long time, long version) {
         serializationLock.lock();
@@ -1423,8 +1426,7 @@ public abstract class FileStore<C extends Chunk<C>>
                 throw t;
             }
 
-            bufferSaveExecutorHWM = submitOrRun(bufferSaveExecutor, () -> storeBuffer(c, buff),
-                    syncRun, 5, bufferSaveExecutorHWM);
+            submitOrRun(bufferSaveExecutor, () -> storeBuffer(c, buff), syncRun, 5);
 
             for (Page<?, ?> p : changed) {
                 p.releaseSavedPages();
@@ -1432,7 +1434,7 @@ public abstract class FileStore<C extends Chunk<C>>
         } catch (MVStoreException e) {
             mvStore.panic(e);
         } catch (Throwable e) {
-            mvStore.panic(DataUtils.newMVStoreException(DataUtils.ERROR_INTERNAL, "{0}", e.toString(), e));
+            mvStore.panic(e);
         } finally {
             serializationLock.unlock();
         }
@@ -1520,7 +1522,7 @@ public abstract class FileStore<C extends Chunk<C>>
         } catch (MVStoreException e) {
             mvStore.panic(e);
         } catch (Throwable e) {
-            mvStore.panic(DataUtils.newMVStoreException(DataUtils.ERROR_INTERNAL, "{0}", e.toString(), e));
+            mvStore.panic(e);
         } finally {
             saveChunkLock.unlock();
             c.buffer = null;
@@ -1839,10 +1841,10 @@ public abstract class FileStore<C extends Chunk<C>>
                 autoCompactLastFileOpCount = getWriteCount() + getReadCount() + 10;
             }
         } catch (InterruptedException ignore) {
+        } catch (MVStoreException e) {
+            mvStore.panic(e);
         } catch (Throwable e) {
-            if (!mvStore.handleException(e)) {
-                throw e;
-            }
+            mvStore.panic(e);
         }
     }
 
@@ -2232,7 +2234,7 @@ public abstract class FileStore<C extends Chunk<C>>
         private final int sleep;
 
         BackgroundWriterThread(FileStore<?> store, int sleep, String fileStoreName) {
-            super("MVStore background writer " + fileStoreName);
+            super(Utils.H2_THREAD_GROUP, "MVStore background writer " + fileStoreName);
             this.store = store;
             this.sleep = sleep;
             setDaemon(true);

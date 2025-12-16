@@ -944,7 +944,6 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
     protected final void beforeWrite() {
         assert !getRoot().isLockedByCurrentThread() : getRoot();
         if (closed) {
-            int id = getId();
             String mapName = store.getMapName(id);
             throw DataUtils.newMVStoreException(
                     DataUtils.ERROR_CLOSED, "Map {0}({1}) is closed. {2}", mapName, id, store.getPanicException());

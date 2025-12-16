@@ -236,7 +236,8 @@ public final class Transaction {
                     break;
                 case STATUS_CLOSED:
                     valid = currentStatus == STATUS_COMMITTED ||
-                            currentStatus == STATUS_ROLLED_BACK;
+                            currentStatus == STATUS_ROLLED_BACK ||
+                            currentStatus == STATUS_CLOSED;
                     break;
                 case STATUS_OPEN:
                 default:
@@ -641,9 +642,11 @@ public final class Transaction {
     void closeIt() {
         transactionMaps.clear();
         long lastState = setStatus(STATUS_CLOSED);
-        store.store.deregisterVersionUsage(txCounter);
-        if((hasChanges(lastState) || hasRollback(lastState))) {
-            notifyAllWaitingTransactions();
+        if (getStatus(lastState) != STATUS_CLOSED) {
+            store.store.deregisterVersionUsage(txCounter);
+            if ((hasChanges(lastState) || hasRollback(lastState))) {
+                notifyAllWaitingTransactions();
+            }
         }
     }
 

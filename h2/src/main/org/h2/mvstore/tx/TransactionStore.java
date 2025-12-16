@@ -367,6 +367,9 @@ public class TransactionStore {
         store.commit();
     }
 
+    public void closeImmediately() {
+    }
+
     /**
      * Begin a new transaction.
      *

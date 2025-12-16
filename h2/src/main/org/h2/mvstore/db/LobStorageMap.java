@@ -426,13 +426,15 @@ public final class LobStorageMap implements LobStorageInterface
 
     @Override
     public void close() {
-        mvStore.setOldestVersionTracker(null);
-        Utils.shutdownExecutor(cleanupExecutor);
-        if (!mvStore.isClosed() && mvStore.isVersioningRequired()) {
-            // remove all session variables and temporary lobs
-            removeAllForTable(LobStorageFrontend.TABLE_ID_SESSION_VARIABLE);
-            // remove all dead LOBs, even deleted in current version, before the store closed
-            cleanup(mvStore.getCurrentVersion() + 1);
+        if (cleanupExecutor != null && !cleanupExecutor.isShutdown()) {
+            mvStore.setOldestVersionTracker(null);
+            Utils.shutdownExecutor(cleanupExecutor);
+            if (!mvStore.isClosed() && mvStore.isVersioningRequired()) {
+                // remove all session variables and temporary lobs
+                removeAllForTable(LobStorageFrontend.TABLE_ID_SESSION_VARIABLE);
+                // remove all dead LOBs, even deleted in current version, before the store closed
+                cleanup(mvStore.getCurrentVersion() + 1);
+            }
         }
     }
 

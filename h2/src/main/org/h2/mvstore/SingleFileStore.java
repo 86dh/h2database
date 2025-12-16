@@ -213,17 +213,6 @@ public class SingleFileStore extends RandomAccessStore {
         }
     }
 
-    /**
-     * Calculates relative "priority" for chunk to be moved.
-     *
-     * @param block where chunk starts
-     * @return priority, bigger number indicate that chunk need to be moved sooner
-     */
-    @Override
-    public int getMovePriority(int block) {
-        return freeSpace.getMovePriority(block);
-    }
-
     @Override
     public void backup(ZipOutputStream out) throws IOException {
         boolean before = isSpaceReused();

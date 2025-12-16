@@ -119,7 +119,14 @@ public final class Store {
                 // use a larger page split size to improve the compression ratio
                 builder.pageSplitSize(64 * 1024);
             }
-            builder.backgroundExceptionHandler((t, e) -> db.setBackgroundException(DbException.convert(e)));
+            builder.backgroundExceptionHandler((t, e) -> {
+                DbException dbException = DbException.convert(e);
+                db.setBackgroundException(dbException);
+                if (!Utils.isBackgroundThread()) {
+                    db.shutdownImmediately();
+                }
+                throw dbException;
+            });
             // always start without background thread first, and if necessary,
             // it will be set up later, after db has been fully started,
             // otherwise background thread would compete for store lock
@@ -247,7 +254,11 @@ public final class Store {
      * Close the store, without persisting changes.
      */
     public void closeImmediately() {
-        mvStore.closeImmediately();
+        try {
+            transactionStore.closeImmediately();
+        } finally {
+            mvStore.closeImmediately();
+        }
     }
 
     /**
@@ -340,13 +351,8 @@ public final class Store {
      */
     public void close(int allowedCompactionTime) {
         try {
-            FileStore<?> fileStore = mvStore.getFileStore();
-            if (!mvStore.isClosed() && fileStore != null) {
-                if (!fileStore.isReadOnly()) {
-                    transactionStore.close();
-                }
-                mvStore.close(allowedCompactionTime);
-            }
+            transactionStore.close();
+            mvStore.close(allowedCompactionTime);
         } catch (MVStoreException e) {
             mvStore.closeImmediately();
             throw DbException.get(ErrorCode.IO_EXCEPTION_1, e, "Closing");

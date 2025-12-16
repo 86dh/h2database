@@ -37,7 +37,10 @@ public class TestDiskFull extends TestDb {
         fs.setPartialWrites(true);
         try {
             test(Integer.MAX_VALUE);
-            int max = Integer.MAX_VALUE - fs.getDiskFullCount() + 10;
+            // Since test() run seems to be non-repeatable (due to randomness in thead scheduling?)
+            // this need to be limited to make testing time reasonable
+            int max = Math.min(1000, Integer.MAX_VALUE - fs.getDiskFullCount() + 10);
+            println("write op count: " + max);
             for (int i = 0; i < max; i++) {
                 test(i);
             }
