@@ -225,11 +225,6 @@ public class SingleFileStore extends RandomAccessStore {
     }
 
     @Override
-    protected long getAfterLastBlock_() {
-        return freeSpace.getAfterLastBlock();
-    }
-
-    @Override
     public void backup(ZipOutputStream out) throws IOException {
         boolean before = isSpaceReused();
         setReuseSpace(false);

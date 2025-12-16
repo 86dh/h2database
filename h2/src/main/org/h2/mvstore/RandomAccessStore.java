@@ -30,6 +30,7 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
     /**
      * The free spaces between the chunks. The first block to use is block 2
      * (the first two blocks are the store header).
+     * Access to this object is protected by {@link #saveChunkLock}
      */
     protected final FreeSpaceBitSet freeSpace = new FreeSpaceBitSet(2, BLOCK_SIZE);
 
@@ -129,9 +130,11 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
     }
 
     private void freeChunkSpace(SFChunk chunk) {
-        long start = chunk.block * BLOCK_SIZE;
-        int length = chunk.len * BLOCK_SIZE;
-        free(start, length);
+        if (chunk.isAllocated()) {
+            long start = chunk.block * BLOCK_SIZE;
+            int length = chunk.len * BLOCK_SIZE;
+            free(start, length);
+        }
     }
 
     /**
@@ -342,7 +345,6 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
 
     @Override
     protected void initializeStoreHeader(long time) {
-        initializeCommonHeaderAttributes(time);
         writeStoreHeader();
     }
 
@@ -369,7 +371,6 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
         // end of the used space is not necessarily the end of the file
         boolean storeAtEndOfFile = filePos + buffer.limit() >= size();
         boolean shouldWriteStoreHeader = shouldWriteStoreHeader(chunk, storeAtEndOfFile);
-        lastChunk = chunk;
         if (shouldWriteStoreHeader) {
             writeStoreHeader();
         }
@@ -626,7 +627,7 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
 
     private boolean moveChunkInside(SFChunk chunkToMove, long boundary) {
         boolean res = chunkToMove.block >= boundary &&
-                predictAllocation(chunkToMove.len, boundary, -1) < boundary &&
+                predictAllocation(chunkToMove.len, boundary, -1) + chunkToMove.len <= boundary &&
                 moveChunk(chunkToMove, boundary, -1);
         assert !res || chunkToMove.block + chunkToMove.len <= boundary;
         return res;
@@ -649,22 +650,29 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
         if (!getChunks().containsKey(chunk.id)) {
             return false;
         }
-        long start = chunk.block * FileStore.BLOCK_SIZE;
+        long originalBlock = chunk.block;
+        long start = originalBlock * FileStore.BLOCK_SIZE;
         int length = chunk.len * FileStore.BLOCK_SIZE;
         long pos = allocate(length, reservedAreaLow, reservedAreaHigh);
-        long block = pos / FileStore.BLOCK_SIZE;
-        // in the absence of a reserved area,
-        // block should always move closer to the beginning of the file
-        assert reservedAreaHigh > 0 || block <= chunk.block : block + " " + chunk;
-        ByteBuffer readBuff = readFully(chunk, start, length);
-        writeFully(null, pos, readBuff);
-        // can not set chunk's new block until it's fully written at new location,
-        // because concurrent reader can pick it up prematurely,
-        chunk.block = block;
-        chunk.next = 0;
-        free(start, length);
-        saveChunkMetadataChanges(chunk);
-        return true;
+        try {
+            long block = pos / FileStore.BLOCK_SIZE;
+            // in the absence of a reserved area,
+            // block should always move closer to the beginning of the file
+            assert reservedAreaHigh > 0 || block <= chunk.block : block + " " + chunk;
+            ByteBuffer readBuff = readFully(chunk, start, length);
+            writeFully(null, pos, readBuff);
+            // can not set chunk's new block until it's fully written at new location,
+            // because concurrent reader can pick it up prematurely,
+            chunk.block = block;
+            chunk.next = 0;
+            free(start, length);
+            saveChunkMetadataChanges(chunk);
+            return true;
+        } catch (Throwable e) {
+            chunk.block = originalBlock;
+            free(pos, length);
+            throw e;
+        }
     }
 
     /**
@@ -675,12 +683,17 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
      */
     @Override
     protected void shrinkStoreIfPossible(int minPercent) {
-        assert saveChunkLock.isHeldByCurrentThread();
-        long result = getFileLengthInUse();
-        assert !mvStore.isLockedByCurrentThread() || result == measureFileLengthInUse() :
-                mvStore.isLockedByCurrentThread() + " && " +
-                result + " != " + measureFileLengthInUse();
+        assert validateStoreSize();
         shrinkIfPossible(minPercent);
+    }
+
+    private boolean validateStoreSize() {
+        assert saveChunkLock.isHeldByCurrentThread();
+        if (mvStore.isLockedByCurrentThread()) {
+            long result = getFileLengthInUse();
+            assert result == measureFileLengthInUse() : result + " != " + measureFileLengthInUse();
+        }
+        return true;
     }
 
     private void shrinkIfPossible(int minPercent) {
@@ -786,10 +799,6 @@ public abstract class RandomAccessStore extends FileStore<SFChunk>
      */
     private long getAfterLastBlock() {
         assert saveChunkLock.isHeldByCurrentThread();
-        return getAfterLastBlock_();
-    }
-
-    protected long getAfterLastBlock_() {
         return freeSpace.getAfterLastBlock();
     }
 

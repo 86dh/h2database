@@ -6,6 +6,7 @@
 package org.h2.command;
 
 import java.sql.SQLException;
+import java.sql.SQLNonTransientException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Set;
@@ -306,7 +307,7 @@ public abstract class Command implements CommandInterface {
                     return update(generatedKeysRequest);
                 } catch (DbException e) {
                     // cannot retry some commands
-                    if (!isRetryable()) {
+                    if (!isRetryable() || e.getSQLException() instanceof SQLNonTransientException) {
                         throw e;
                     }
                     start = filterConcurrentUpdate(e, start);
