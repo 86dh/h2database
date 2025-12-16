@@ -513,6 +513,9 @@ public class TransactionStore {
             // made by this transaction, to be considered as "committed"
             flipCommittingTransactionsBit(transactionId, true);
 
+            t.notifyAllWaitingTransactions();
+
+
             CommitDecisionMaker<Object> commitDecisionMaker = new CommitDecisionMaker<>();
             try {
                 while (cursor.hasNext()) {

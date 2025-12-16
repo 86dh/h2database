@@ -644,13 +644,10 @@ public final class Transaction {
         long lastState = setStatus(STATUS_CLOSED);
         if (getStatus(lastState) != STATUS_CLOSED) {
             store.store.deregisterVersionUsage(txCounter);
-            if ((hasChanges(lastState) || hasRollback(lastState))) {
-                notifyAllWaitingTransactions();
-            }
         }
     }
 
-    private void notifyAllWaitingTransactions() {
+    void notifyAllWaitingTransactions() {
         if (notificationRequested) {
             synchronized (this) {
                 notifyAll();
@@ -735,7 +732,7 @@ public final class Transaction {
         long state;
         int status;
         while ((status = getStatus(state = statusAndLogId.get())) != STATUS_CLOSED
-                && status != STATUS_ROLLED_BACK && !hasRollback(state)) {
+                && status != STATUS_COMMITTED && status != STATUS_ROLLED_BACK && !hasRollback(state)) {
             if (waiter.getStatus() != STATUS_OPEN) {
                 waiter.tryThrowDeadLockException(true);
             }
