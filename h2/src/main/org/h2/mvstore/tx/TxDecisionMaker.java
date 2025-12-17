@@ -186,7 +186,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
      * (transaction we are acting within).
      *
      * @param transactionId to check
-     * @return true it it is "current" transaction's id, false otherwise
+     * @return true it is "current" transaction's id, false otherwise
      */
     final boolean isThisTransaction(int transactionId) {
         return transactionId == transaction.transactionId;
