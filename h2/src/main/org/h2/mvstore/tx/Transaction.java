@@ -489,32 +489,39 @@ public final class Transaction {
      * Commit the transaction. Afterward, this transaction is closed.
      */
     public void commit() {
-        assert store.isTransactionOpen(transactionId);
+        assert !store.isTransactionClosed(transactionId);
         markTransactionEnd();
         Throwable ex = null;
+        boolean wasActive = false;
         boolean hasChanges = false;
-        int previousStatus = STATUS_OPEN;
         try {
-            long state = setStatus(STATUS_COMMITTED);
-            hasChanges = hasChanges(state);
-            previousStatus = getStatus(state);
+            long lastState = setStatus(STATUS_COMMITTED);
+            hasChanges = hasChanges(lastState);
+            int previousStatus = getStatus(lastState);
+            wasActive = isActive(previousStatus);
             if (hasChanges) {
                 store.commit(this, previousStatus == STATUS_COMMITTED);
             }
         } catch (Throwable e) {
-            ex = e;
-            throw e;
+            if (wasActive) {
+                ex = e;
+                throw e;
+            }
         } finally {
-            if (isActive(previousStatus)) {
-                try {
-                    store.endTransaction(this, hasChanges);
-                } catch (Throwable e) {
-                    if (ex == null) {
-                        throw e;
-                    } else {
-                        ex.addSuppressed(e);
-                    }
-                }
+            if (wasActive) {
+                close(hasChanges, ex);
+            }
+        }
+    }
+
+    void close(boolean hasChanges, Throwable ex) {
+        try {
+            store.endTransaction(this, hasChanges);
+        } catch (Throwable e) {
+            if (ex == null) {
+                throw e;
+            } else {
+                ex.addSuppressed(e);
             }
         }
     }
@@ -554,31 +561,24 @@ public final class Transaction {
     public void rollback() {
         markTransactionEnd();
         Throwable ex = null;
-        int status = STATUS_OPEN;
+        boolean wasActive = false;
+        boolean hasChanges = false;
         try {
             long lastState = setStatus(STATUS_ROLLED_BACK);
-            status = getStatus(lastState);
+            wasActive = isActive(getStatus(lastState));
             long logId = getLogId(lastState);
             if (logId > 0) {
+                hasChanges = true;
                 store.rollbackTo(this, logId, 0);
             }
         } catch (Throwable e) {
-            status = getStatus();
-            if (isActive(status)) {
+            if (wasActive) {
                 ex = e;
                 throw e;
             }
         } finally {
-            try {
-                if (isActive(status)) {
-                    store.endTransaction(this, true);
-                }
-            } catch (Throwable e) {
-                if (ex == null) {
-                    throw e;
-                } else {
-                    ex.addSuppressed(e);
-                }
+            if (wasActive) {
+                close(hasChanges, ex);
             }
         }
     }

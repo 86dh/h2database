@@ -202,7 +202,7 @@ public class TransactionStore {
                         if (store.hasData(mapName)) {
                             int transactionId = StringUtils.parseUInt31(mapName, UNDO_LOG_NAME_PREFIX.length() + 1,
                                     mapName.length());
-                            if (!isTransactionOpen(transactionId)) {
+                            if (isTransactionClosed(transactionId)) {
                                 Object[] data = preparedTransactions.get(transactionId);
                                 int status;
                                 String name;
@@ -248,8 +248,16 @@ public class TransactionStore {
         }
     }
 
-    boolean isTransactionOpen(int transactionId) {
-        return openTransactions.get().get(transactionId);
+    /**
+     * Checks if transaction is completely closed - status set to CLOSED,
+     * corresponding bit in open & commiting bit sets cleared,
+     * transaction slot emptied.
+     * That also means that all uncommitted entries from this transaction, has been re-written as commited.
+     * @param transactionId to check
+     * @return true if transaction is completely closed, false otherwise
+     */
+    public boolean isTransactionClosed(int transactionId) {
+        return !openTransactions.get().get(transactionId);
     }
 
     private void markUndoLogAsCommitted(int transactionId) {
@@ -263,6 +271,7 @@ public class TransactionStore {
     public void endLeftoverTransactions() {
         List<Transaction> list = getOpenTransactions();
         for (Transaction t : list) {
+            assert !BitSetHelper.get(committingTransactions.get(), t.transactionId);
             int status = t.getStatus();
             if (status == Transaction.STATUS_COMMITTED) {
                 t.commit();
@@ -419,6 +428,8 @@ public class TransactionStore {
             sequenceNo = clone.getVersion();
             success = openTransactions.compareAndSet(original, clone);
         } while(!success);
+
+        assert !BitSetHelper.get(committingTransactions.get(), transactionId);
 
         Transaction transaction = new Transaction(this, transactionId, sequenceNo, status, name, logId,
                 timeoutMillis, ownerId, isolationLevel, listener);
