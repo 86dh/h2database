@@ -206,7 +206,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
         TransactionStore store = transaction.store;
         do {
             blockingTx = store.getTransaction(transactionId);
-            result = BitSetHelper.get(store.committingTransactions.get(), transactionId);
+            result = store.committingTransactions.get().get(transactionId);
         } while (blockingTx != store.getTransaction(transactionId));
 
         if (!result) {
@@ -273,7 +273,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
                 return logAndDecideToPut(null, null);
             } else {
                 long id = existingValue.getOperationId();
-                if (id == 0 // entry is a committed one
+                if (id == 0 // entry is a committed one,
                             // or it came from the same transaction
                         || isThisTransaction(blockingId = TransactionStore.getTransactionId(id))) {
                     if(existingValue.getCurrentValue() != null) {

@@ -337,12 +337,12 @@ public final class Transaction {
             // The purpose of the following loop is to get a coherent picture
             // In order to get such a "snapshot", we wait for a moment of silence,
             // when no new transaction were committed / closed.
-            long[] committingTransactions;
+            VersionedBitSet committingTransactions;
             do {
                 committingTransactions = store.committingTransactions.get();
                 for (MVMap<Object,VersionedValue<Object>> map : maps) {
                     TransactionMap<?,?> txMap = openMapX(map);
-                    txMap.setStatementSnapshot(new Snapshot(map.flushAndGetRoot(), committingTransactions));
+                    txMap.setStatementSnapshot(new Snapshot(map.flushAndGetRoot(), committingTransactions.bits));
                 }
                 if (isReadCommitted()) {
                     undoLogRootReferences = store.collectUndoLogRootReferences();
@@ -611,7 +611,7 @@ public final class Transaction {
         this.timeoutMillis = timeoutMillis > 0 ? timeoutMillis : store.timeoutMillis;
     }
 
-    private long getLogId() {
+    long getLogId() {
         return getLogId(statusAndLogId.get());
     }
 

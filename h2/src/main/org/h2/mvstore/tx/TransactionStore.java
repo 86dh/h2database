@@ -6,6 +6,7 @@
 package org.h2.mvstore.tx;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -89,7 +90,7 @@ public class TransactionStore implements AutoCloseable
      * and undo record are still around.
      * Nevertheless, all of those should be considered by other transactions as committed.
      */
-    final AtomicReference<long[]> committingTransactions = new AtomicReference<>(new long[0]);
+    final AtomicReference<VersionedBitSet> committingTransactions = new AtomicReference<>(new VersionedBitSet());
 
     private final AtomicInteger state = new AtomicInteger(OPEN);
 
@@ -198,6 +199,7 @@ public class TransactionStore implements AutoCloseable
      */
     public void init(RollbackListener listener) {
         if (state.compareAndSet(OPEN, INITIALIZING)) {
+            List<Transaction> leftoverTransactions = new ArrayList<>();
             for (String mapName : store.getMapNames()) {
                 if (mapName.startsWith(UNDO_LOG_NAME_PREFIX)) {
                     // Unexpectedly short name may be encountered upon upgrade from older version
@@ -227,21 +229,28 @@ public class TransactionStore implements AutoCloseable
                                     assert lastUndoKey != null;
                                     assert getTransactionId(lastUndoKey) == transactionId;
                                     long logId = getLogId(lastUndoKey) + 1;
+                                    int commitOrder = 1;
                                     if (committed) {
-                                        // give it a proper name and used marker record instead
+                                        // give it a proper name and use a marker record instead
                                         store.renameMap(undoLog, getUndoLogName(transactionId));
-                                        markUndoLogAsCommitted(transactionId);
+                                        markUndoLogAsCommitted(transactionId, -commitOrder);
                                     } else {
                                         committed = logId > LOG_ID_MASK;
                                     }
+
                                     if (committed) {
                                         status = Transaction.STATUS_COMMITTED;
+                                        Record<?, ?> record = undoLog.get(lastUndoKey);
+                                        assert record != null;
+                                        assert record.mapId < 0;
+                                        commitOrder = -record.mapId;
                                         lastUndoKey = undoLog.lowerKey(lastUndoKey);
                                         assert lastUndoKey == null || getTransactionId(lastUndoKey) == transactionId;
                                         logId = lastUndoKey == null ? 0 : getLogId(lastUndoKey) + 1;
                                     }
-                                    registerTransaction(transactionId, status, name, logId, timeoutMillis, 0,
-                                            IsolationLevel.READ_COMMITTED, listener);
+                                    Transaction transaction = new Transaction(null, transactionId, commitOrder,
+                                                                                status, name, logId, 1, 0, null, null);
+                                    leftoverTransactions.add(transaction);
                                     continue;
                                 } catch (Throwable ignore) {
                                     /* Exception like NPE or Assertion are possible here after some chunk loss
@@ -256,6 +265,11 @@ public class TransactionStore implements AutoCloseable
                         store.removeMap(mapName);
                     }
                 }
+            }
+            leftoverTransactions.sort(Comparator.comparingLong(Transaction::getSequenceNum));
+            for (Transaction tx : leftoverTransactions) {
+                registerTransaction(tx.getId(), tx.getStatus(), tx.getName(), tx.getLogId(), timeoutMillis, 0,
+                        IsolationLevel.READ_COMMITTED, listener);
             }
             state.set(READY);
         }
@@ -273,8 +287,8 @@ public class TransactionStore implements AutoCloseable
         return !openTransactions.get().get(transactionId);
     }
 
-    private void markUndoLogAsCommitted(int transactionId) {
-        addUndoLogRecord(transactionId, LOG_ID_MASK, Record.COMMIT_MARKER);
+    private void markUndoLogAsCommitted(int transactionId, long commitOrder) {
+        addUndoLogRecord(transactionId, LOG_ID_MASK, new Record<>(-(int)commitOrder));
     }
 
     /**
@@ -284,7 +298,7 @@ public class TransactionStore implements AutoCloseable
     public void endLeftoverTransactions() {
         List<Transaction> list = getOpenTransactions();
         for (Transaction t : list) {
-            assert !BitSetHelper.get(committingTransactions.get(), t.transactionId);
+            assert !committingTransactions.get().get(t.transactionId);
             int status = t.getStatus();
             if (status == Transaction.STATUS_COMMITTED) {
                 t.commit();
@@ -370,15 +384,27 @@ public class TransactionStore implements AutoCloseable
         }
         ArrayList<Transaction> list = new ArrayList<>();
         int transactionId = 0;
-        VersionedBitSet bitSet = openTransactions.get();
-        while((transactionId = bitSet.nextSetBit(transactionId + 1)) > 0) {
-            Transaction transaction = getTransaction(transactionId);
-            if(transaction != null) {
-                if(transaction.getStatus() != Transaction.STATUS_CLOSED) {
-                    list.add(transaction);
+
+        VersionedBitSet lastCommittingTx;
+        VersionedBitSet latestCommittingTx = committingTransactions.get();
+        VersionedBitSet latestOpenTx;
+        do {
+            lastCommittingTx = latestCommittingTx;
+            latestOpenTx = openTransactions.get();
+            latestCommittingTx = committingTransactions.get();
+        } while (lastCommittingTx != latestCommittingTx);
+
+        while((transactionId = latestOpenTx.nextSetBit(transactionId + 1)) > 0) {
+            if (!lastCommittingTx.get(transactionId)) {
+                Transaction transaction = getTransaction(transactionId);
+                if(transaction != null) {
+                    if(transaction.getStatus() != Transaction.STATUS_CLOSED) {
+                        list.add(transaction);
+                    }
                 }
             }
         }
+        list.sort(Comparator.comparingLong(Transaction::getSequenceNum));
         return list;
     }
 
@@ -449,7 +475,7 @@ public class TransactionStore implements AutoCloseable
             success = openTransactions.compareAndSet(original, clone);
         } while(!success);
 
-        assert !BitSetHelper.get(committingTransactions.get(), transactionId);
+        assert !committingTransactions.get().get(transactionId);
 
         Transaction transaction = new Transaction(this, transactionId, sequenceNo, status, name, logId,
                 timeoutMillis, ownerId, isolationLevel, listener);
@@ -527,7 +553,14 @@ public class TransactionStore implements AutoCloseable
     void commit(Transaction t, boolean recovery) {
         if (!store.isClosed()) {
             int transactionId = t.transactionId;
-            // First, mark log as "committed".
+
+            // this is an atomic action that causes all changes
+            // made by this transaction, to be considered as "committed"
+            VersionedBitSet commitingTx = flipCommittingTransactionsBit(transactionId, true);
+
+            t.notifyAllWaitingTransactions();
+
+            // Now mark log as "committed".
             // It does not change the way this transaction is treated by others,
             // but preserves fact of commit in case of abrupt termination.
             MVMap<Long,Record<?,?>> undoLog = undoLogs[transactionId];
@@ -537,15 +570,8 @@ public class TransactionStore implements AutoCloseable
                 cursor = undoLog.cursor(null);
             } else {
                 cursor = undoLog.cursor(null);
-                markUndoLogAsCommitted(transactionId);
+                markUndoLogAsCommitted(transactionId, commitingTx.getVersion());
             }
-
-            // this is an atomic action that causes all changes
-            // made by this transaction, to be considered as "committed"
-            flipCommittingTransactionsBit(transactionId, true);
-
-            t.notifyAllWaitingTransactions();
-
 
             CommitDecisionMaker<Object> commitDecisionMaker = new CommitDecisionMaker<>();
             try {
@@ -572,15 +598,17 @@ public class TransactionStore implements AutoCloseable
         }
     }
 
-    private void flipCommittingTransactionsBit(int transactionId, boolean flag) {
+    private VersionedBitSet flipCommittingTransactionsBit(int transactionId, boolean flag) {
+        VersionedBitSet result;
         boolean success;
         do {
-            long[] original = committingTransactions.get();
-            assert BitSetHelper.get(original, transactionId) != flag :
+            VersionedBitSet original = committingTransactions.get();
+            assert original.get(transactionId) != flag :
                     flag ? "Double commit" : "Mysterious bit's disappearance";
-            long[] clone = BitSetHelper.flip(original, transactionId);
-            success = committingTransactions.compareAndSet(original, clone);
+            result = new VersionedBitSet(original, transactionId);
+            success = committingTransactions.compareAndSet(original, result);
         } while(!success);
+        return result;
     }
 
     <K,V> MVMap<K, VersionedValue<V>> openVersionedMap(String name, DataType<K> keyType, DataType<V> valueType) {
@@ -651,7 +679,7 @@ public class TransactionStore implements AutoCloseable
      *                   false if it just performed a data access
      */
     void endTransaction(Transaction t, boolean hasChanges) {
-        assert !BitSetHelper.get(committingTransactions.get(), t.transactionId);
+        assert !committingTransactions.get().get(t.transactionId);
         t.closeIt();
         int txId = t.transactionId;
         transactions.set(txId, null);

@@ -7,7 +7,6 @@ package org.h2.mvstore.tx;
 
 import java.util.AbstractMap;
 import java.util.AbstractSet;
-import java.util.BitSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -561,14 +560,14 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
         // which they had at some recent moment in time.
         // In order to get such a "snapshot", we wait for a moment of silence,
         // when neither of the variables concurrently changes it's value.
-        AtomicReference<long[]> holder = transaction.store.committingTransactions;
-        long[] committingTransactions = holder.get();
+        AtomicReference<VersionedBitSet> holder = transaction.store.committingTransactions;
+        VersionedBitSet committingTransactions = holder.get();
         while (true) {
-            long[] prevCommittingTransactions = committingTransactions;
+            VersionedBitSet prevCommittingTransactions = committingTransactions;
             RootReference<K,VersionedValue<V>> root = map.getRoot();
             committingTransactions = holder.get();
             if (committingTransactions == prevCommittingTransactions) {
-                return snapshotConsumer.apply(root, committingTransactions);
+                return snapshotConsumer.apply(root, committingTransactions.bits);
             }
         }
     }
@@ -1140,7 +1139,6 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
 
         /**
          * Fetches a next entry.
-         *
          * This method cannot be used together with {@link #hasNext()} and
          * {@link #next()}.
          *
