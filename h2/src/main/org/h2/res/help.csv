@@ -6730,7 +6730,7 @@ LOCK_TIMEOUT()
 ","
 Returns the free memory in KB (where 1024 bytes is a KB).
 This method returns a long.
-The garbage is run before returning the value.
+The garbage collector is run before returning the value.
 Admin rights are required to execute this command.
 ","
 MEMORY_FREE()
@@ -6741,7 +6741,7 @@ MEMORY_FREE()
 ","
 Returns the used memory in KB (where 1024 bytes is a KB).
 This method returns a long.
-The garbage is run before returning the value.
+The garbage collector is run before returning the value.
 Admin rights are required to execute this command.
 ","
 MEMORY_USED()
