@@ -499,7 +499,7 @@ public final class Transaction {
             hasChanges = hasChanges(lastState);
             int previousStatus = getStatus(lastState);
             wasActive = isActive(previousStatus);
-            if (hasChanges) {
+            if (wasActive && hasChanges) {
                 store.commit(this, previousStatus == STATUS_COMMITTED);
             }
         } catch (Throwable e) {

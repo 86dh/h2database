@@ -564,14 +564,10 @@ public class TransactionStore implements AutoCloseable
             // It does not change the way this transaction is treated by others,
             // but preserves fact of commit in case of abrupt termination.
             MVMap<Long,Record<?,?>> undoLog = undoLogs[transactionId];
-            Cursor<Long,Record<?,?>> cursor;
-            if(recovery) {
-                removeUndoLogRecord(transactionId);
-                cursor = undoLog.cursor(null);
-            } else {
-                cursor = undoLog.cursor(null);
+            if(!recovery) {
                 markUndoLogAsCommitted(transactionId, commitingTx.getVersion());
             }
+            Cursor<Long,Record<?,?>> cursor = undoLog.cursor(null);
 
             CommitDecisionMaker<Object> commitDecisionMaker = new CommitDecisionMaker<>();
             try {
@@ -579,6 +575,9 @@ public class TransactionStore implements AutoCloseable
                     Long undoKey = cursor.next();
                     Record<?,?> op = cursor.getValue();
                     int mapId = op.mapId;
+                    if (mapId < 0) {
+                        break;
+                    }
                     MVMap<Object, VersionedValue<Object>> map = openMap(mapId);
                     if (map != null && !map.isClosed()) { // might be null if map was removed later
                         Object key = op.key;
