@@ -560,6 +560,8 @@ public class TransactionStore implements AutoCloseable
 
             t.notifyAllWaitingTransactions();
 
+            t.markStatementStart(null);
+
             // Now mark log as "committed".
             // It does not change the way this transaction is treated by others,
             // but preserves fact of commit in case of abrupt termination.
@@ -587,6 +589,7 @@ public class TransactionStore implements AutoCloseable
                         map.operate(key, null, commitDecisionMaker);
                     }
                 }
+                t.markStatementEnd();
             } finally {
                 try {
                     undoLog.clear();

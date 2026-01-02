@@ -15,6 +15,8 @@ import org.h2.mvstore.type.MetaType;
 import org.h2.mvstore.type.StatefulDataType;
 import org.h2.value.VersionedValue;
 
+import static org.h2.value.VersionedValue.NO_OPERATION_ID;
+
 /**
  * The value type for a versioned value.
  */
@@ -39,7 +41,7 @@ public class VersionedValueType<T,D> extends BasicDataType<VersionedValue<T>> im
         if(v == null) return 0;
         int res = Constants.MEMORY_OBJECT + 8 + 2 * Constants.MEMORY_POINTER +
                 getValMemory(v.getCurrentValue());
-        if (v.getOperationId() != 0) {
+        if (v.getOperationId() != NO_OPERATION_ID) {
             res += getValMemory(v.getCommittedValue());
         }
         return res;
@@ -51,15 +53,16 @@ public class VersionedValueType<T,D> extends BasicDataType<VersionedValue<T>> im
 
     @Override
     public void read(ByteBuffer buff, Object storage, int len) {
+        VersionedValue<T>[] values = cast(storage);
         if (buff.get() == 0) {
             // fast path (no op ids or null entries)
             for (int i = 0; i < len; i++) {
-                cast(storage)[i] = VersionedValueCommitted.getInstance(valueType.read(buff));
+                values[i] = VersionedValueCommitted.getInstance(valueType.read(buff));
             }
         } else {
             // slow path (some entries may be null)
             for (int i = 0; i < len; i++) {
-                cast(storage)[i] = read(buff);
+                values[i] = read(buff);
             }
         }
     }

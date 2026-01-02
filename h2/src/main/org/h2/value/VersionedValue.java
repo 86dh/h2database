@@ -11,7 +11,9 @@ package org.h2.value;
  * Also for uncommitted values it contains operationId - a combination of
  * transactionId and logId.
  */
-public class VersionedValue<T> {
+public abstract class VersionedValue<T> {
+
+    public static final long NO_OPERATION_ID = 0L;
 
     protected VersionedValue() {}
 
@@ -20,7 +22,7 @@ public class VersionedValue<T> {
     }
 
     public long getOperationId() {
-        return 0L;
+        return NO_OPERATION_ID;
     }
 
     @SuppressWarnings("unchecked")

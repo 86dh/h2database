@@ -146,7 +146,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
     @Override
     public V put(K key, V value) {
         DataUtils.checkArgument(value != null, "The value may not be null");
-        return operate(key, value, DecisionMaker.PUT);
+        return operate(key, value, DecisionMaker.putDecision());
     }
 
     /**
@@ -514,7 +514,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
     @Override
     @SuppressWarnings("unchecked")
     public V remove(Object key) {
-        return operate((K)key, null, DecisionMaker.REMOVE);
+        return operate((K)key, null, DecisionMaker.removeDecision());
     }
 
     /**
@@ -526,7 +526,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      */
     @Override
     public final V putIfAbsent(K key, V value) {
-        return operate(key, value, DecisionMaker.IF_ABSENT);
+        return operate(key, value, DecisionMaker.ifAbsentDecision());
     }
 
     /**
@@ -585,7 +585,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      */
     @Override
     public final V replace(K key, V value) {
-        return operate(key, value, DecisionMaker.IF_PRESENT);
+        return operate(key, value, DecisionMaker.ifPresentDecision());
     }
 
     /**
@@ -1600,11 +1600,9 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      *
      * @param <V> value type of the map
      */
-    public abstract static class DecisionMaker<V> {
-        /**
-         * Decision maker for transaction rollback.
-         */
-        public static final DecisionMaker<Object> DEFAULT = new DecisionMaker<>() {
+    public abstract static class DecisionMaker<V>
+    {
+        private static final DecisionMaker<Object> DEFAULT = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return providedValue == null ? Decision.REMOVE : Decision.PUT;
@@ -1617,9 +1615,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for put().
+         * Decision maker for transaction rollback.
          */
-        public static final DecisionMaker<Object> PUT = new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> defaultDecision() {
+            return (DecisionMaker<V>) DEFAULT;
+        }
+
+        private static final DecisionMaker<Object> PUT = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return Decision.PUT;
@@ -1632,9 +1635,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for remove().
+         * Decision maker for put().
          */
-        public static final DecisionMaker<Object> REMOVE = new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> putDecision() {
+            return (DecisionMaker<V>) PUT;
+        }
+
+        private static final DecisionMaker<Object> REMOVE = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return Decision.REMOVE;
@@ -1647,9 +1655,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for putIfAbsent() key/value.
+         * Decision maker for remove().
          */
-        static final DecisionMaker<Object> IF_ABSENT = new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> removeDecision() {
+            return (DecisionMaker<V>) REMOVE;
+        }
+
+        private static final DecisionMaker<Object> IF_ABSENT = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return existingValue == null ? Decision.PUT : Decision.ABORT;
@@ -1662,9 +1675,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for replace().
+         * Decision maker for putIfAbsent() key/value.
          */
-        static final DecisionMaker<Object> IF_PRESENT= new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> ifAbsentDecision() {
+            return (DecisionMaker<V>) IF_ABSENT;
+        }
+
+        private static final DecisionMaker<Object> IF_PRESENT= new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return existingValue != null ? Decision.PUT : Decision.ABORT;
@@ -1675,6 +1693,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
                 return "if_present";
             }
         };
+
+        /**
+         * Decision maker for replace().
+         */
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> ifPresentDecision() {
+            return (DecisionMaker<V>) IF_PRESENT;
+        }
 
         /**
          * Makes a decision about how to proceed with the update.
@@ -1729,7 +1755,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      * @param decisionMaker command object to make choices during transaction.
      * @return previous value, if mapping for that key existed, or null otherwise
      */
-    public V operate(K key, V value, DecisionMaker<? super V> decisionMaker) {
+    public V operate(K key, V value, DecisionMaker<V> decisionMaker) {
         CursorPos<K,V> tip = null;
         IntValueHolder unsavedMemoryHolder = new IntValueHolder();
         int attempt = 0;

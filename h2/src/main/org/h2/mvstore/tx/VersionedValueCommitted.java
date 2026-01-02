@@ -12,7 +12,8 @@ import org.h2.value.VersionedValue;
  *
  * @author <a href='mailto:andrei.tokar@gmail.com'>Andrei Tokar</a>
  */
-class VersionedValueCommitted<T> extends VersionedValue<T> {
+class VersionedValueCommitted<T> extends VersionedValue<T>
+{
     /**
      * The current value.
      */

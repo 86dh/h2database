@@ -490,7 +490,6 @@ public final class Transaction {
      */
     public void commit() {
         assert !store.isTransactionClosed(transactionId);
-        markTransactionEnd();
         Throwable ex = null;
         boolean wasActive = false;
         boolean hasChanges = false;
@@ -502,6 +501,7 @@ public final class Transaction {
             if (wasActive && hasChanges) {
                 store.commit(this, previousStatus == STATUS_COMMITTED);
             }
+            markTransactionEnd();
         } catch (Throwable e) {
             if (wasActive) {
                 ex = e;

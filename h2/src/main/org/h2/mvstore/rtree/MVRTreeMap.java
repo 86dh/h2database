@@ -110,11 +110,11 @@ public final class MVRTreeMap<V> extends MVMap<Spatial, V> {
      */
     @Override
     public V remove(Object key) {
-        return operate((Spatial) key, null, DecisionMaker.REMOVE);
+        return operate((Spatial) key, null, DecisionMaker.removeDecision());
     }
 
     @Override
-    public V operate(Spatial key, V value, DecisionMaker<? super V> decisionMaker) {
+    public V operate(Spatial key, V value, DecisionMaker<V> decisionMaker) {
         int attempt = 0;
         final Collection<Page<Spatial,V>> removedPages = isPersistent() ? new ArrayList<>() : null;
         while(true) {
@@ -282,7 +282,7 @@ public final class MVRTreeMap<V> extends MVMap<Spatial, V> {
 
     @Override
     public V put(Spatial key, V value) {
-        return operate(key, value, DecisionMaker.PUT);
+        return operate(key, value, DecisionMaker.putDecision());
     }
 
     /**
@@ -293,7 +293,7 @@ public final class MVRTreeMap<V> extends MVMap<Spatial, V> {
      * @param value the value
      */
     public void add(Spatial key, V value) {
-        operate(key, value, DecisionMaker.PUT);
+        operate(key, value, DecisionMaker.putDecision());
     }
 
     private Page<Spatial,V> split(Page<Spatial,V> p) {

@@ -23,6 +23,8 @@ import org.h2.mvstore.RootReference;
 import org.h2.mvstore.type.DataType;
 import org.h2.value.VersionedValue;
 
+import static org.h2.value.VersionedValue.NO_OPERATION_ID;
+
 /**
  * A map that supports transactions.
  *
@@ -167,7 +169,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
                 VersionedValue<?> currentValue = cursor.getValue();
                 assert currentValue != null;
                 long operationId = currentValue.getOperationId();
-                if (operationId != 0 &&         // skip committed entries
+                if (operationId != NO_OPERATION_ID &&         // skip committed entries
                         isIrrelevant(operationId, currentValue, committingTransactions)) {
                     --size;
                 }
@@ -196,7 +198,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
                                 // only the last undo entry for any given map
                                 // key should be considered
                                 long operationId = cursor.getKey();
-                                assert operationId != 0;
+                                assert operationId != NO_OPERATION_ID;
                                 if (currentValue.getOperationId() == operationId &&
                                         isIrrelevant(operationId, currentValue, committingTransactions)) {
                                     --size;
@@ -474,7 +476,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
                 VersionedValue<V> data = map.get(snapshot.root.root, key);
                 if (data != null) {
                     long id = data.getOperationId();
-                    if (id != 0L && transaction.transactionId == TransactionStore.getTransactionId(id)) {
+                    if (id != NO_OPERATION_ID && transaction.transactionId == TransactionStore.getTransactionId(id)) {
                         return data.getCurrentValue();
                     }
                 }
@@ -494,7 +496,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
             return null;
         }
         long id = data.getOperationId();
-        if (id != 0) {
+        if (id != NO_OPERATION_ID) {
             int tx = TransactionStore.getTransactionId(id);
             if (tx != transaction.transactionId && !BitSetHelper.get(committingTransactions, tx)) {
                 // added/modified/removed by uncommitted transaction, change should not be visible
@@ -595,7 +597,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
         VersionedValue<V> data = map.get(key);
         if (data != null) {
             long id = data.getOperationId();
-            return id != 0 && TransactionStore.getTransactionId(id) == transaction.transactionId
+            return id != NO_OPERATION_ID && TransactionStore.getTransactionId(id) == transaction.transactionId
                     && data.getCurrentValue() == null;
         }
         return false;
@@ -956,7 +958,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
         boolean shouldIgnoreRemoval(VersionedValue<?> data) {
             assert data.getCurrentValue() == null;
             long id = data.getOperationId();
-            if (id != 0) {
+            if (id != NO_OPERATION_ID) {
                 int tx = TransactionStore.getTransactionId(id);
                 return transactionId != tx && !BitSetHelper.get(committingTransactions, tx);
             }
@@ -987,7 +989,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
                 // or if value is a committed one, just return it.
                 if (data != null) {
                     long id = data.getOperationId();
-                    if (id != 0) {
+                    if (id != NO_OPERATION_ID) {
                         int tx = TransactionStore.getTransactionId(id);
                         if (tx != transactionId && !BitSetHelper.get(committingTransactions, tx)) {
                             // current value comes from another uncommitted transaction
@@ -1079,7 +1081,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
                 if (data != null) {
                     Object value = data.getCommittedValue();
                     long id = data.getOperationId();
-                    if (id != 0) {
+                    if (id != NO_OPERATION_ID) {
                         int tx = TransactionStore.getTransactionId(id);
                         if (tx == transactionId || BitSetHelper.get(committingTransactions, tx)) {
                             // value comes from this transaction or another committed transaction
@@ -1102,7 +1104,7 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
                 VersionedValue<V> data = uncommittedCursor.getValue();
                 if (data != null) {
                     long id = data.getOperationId();
-                    if (id != 0L && transactionId == TransactionStore.getTransactionId(id)) {
+                    if (id != NO_OPERATION_ID && transactionId == TransactionStore.getTransactionId(id)) {
                         uncommittedKey = key;
                         uncommittedValue = data.getCurrentValue();
                         return;
