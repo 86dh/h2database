@@ -293,8 +293,8 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
      * @param value to be appended
      */
     public void append(K key, V value) {
-        map.append(key, VersionedValueUncommitted.getInstance(
-                                        transaction.log(new Record<>(map.getId(), key, null)), value, null));
+        long undoKey = transaction.log(map.getId(), key, null);
+        map.append(key, VersionedValueUncommitted.getInstance(undoKey, value, null));
         hasChanges = true;
     }
 

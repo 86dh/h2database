@@ -395,7 +395,7 @@ public final class Transaction {
      *
      * @return key for the newly added undo log entry
      */
-    long log(Record<?,?> logRecord) {
+    <K,V> long log(int mapId, K key, VersionedValue<V> oldValue) {
         long currentState = statusAndLogId.getAndIncrement();
         long logId = getLogId(currentState);
         if (logId >= LOG_ID_LIMIT) {
@@ -406,7 +406,7 @@ public final class Transaction {
         }
         int currentStatus = getStatus(currentState);
         checkOpen(currentStatus);
-        long undoKey = store.addUndoLogRecord(transactionId, logId, logRecord);
+       long undoKey = store.addUndoLogRecord(transactionId, logId, new Record<>(mapId, key, oldValue));
         return undoKey;
     }
 

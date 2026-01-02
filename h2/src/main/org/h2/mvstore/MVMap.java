@@ -1703,7 +1703,117 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         }
 
         /**
-         * Makes a decision about how to proceed with the update.
+         * Makes a page-level decision about how to proceed with the operation.
+         * This default implementation delegates decision to entry-level call
+         * {@link #decide(Object, Object, CursorPos)}
+         *
+         * @param tip path from the leaf page, which is targeted by this operation -
+         *            contains specified key or holds it's position
+         * @param key for the operation
+         * @param providedValue value for the operation
+         * @return up to three attributes, which are contained within CursorPos object.
+         *         Possible values are:
+         *         <UL>
+         *          <LI>null, if operation should be re-tried;</LI>
+         *          <LI>original tip, if operation should be aborted withou any changes;</LI>
+         *          <LI>path from an updated page to tree root, where index attribute (irrelevant in this context)
+         *              is reused as memory size adjustment for an updated page;</LI>
+         *         </UL>
+         * @param <K> type of the key
+         */
+        public <K> CursorPos<K,V> decide(CursorPos<K,V> tip, K key, V providedValue) {
+            Page<K,V> p = tip.page;
+            assert p.isLeaf();
+            int index = tip.index;
+            V result = index < 0 ? null : p.getValue(index);
+            Decision decision = decide(result, providedValue, tip);
+            CursorPos<K,V> pos = tip.parent;
+            MVMap<K, V> map = p.map;
+
+            switch (decision) {
+                case REMOVE: {
+                    if (index < 0) {
+                        return tip;
+                    }
+                    if (p.getTotalCount() == 1 && pos != null) {
+                        int keyCount;
+                        do {
+                            p = pos.page;
+                            index = pos.index;
+                            pos = pos.parent;
+                            keyCount = p.getKeyCount();
+                            // condition below should always be false, but older
+                            // versions (up to 1.4.197) may create
+                            // single-childed (with no keys) internal nodes,
+                            // which we skip here
+                        } while (keyCount == 0 && pos != null);
+
+                        if (keyCount <= 1) {
+                            if (keyCount == 1) {
+                                assert index <= 1;
+                                p = p.getChildPage(1 - index);
+                            } else {
+                                // if root happens to be such single-childed
+                                // (with no keys) internal node, then just
+                                // replace it with empty leaf
+                                p = Page.createEmptyLeaf(map);
+                            }
+                            return new CursorPos<>(p, 0, pos);
+                        }
+                    }
+                    p = p.copy();
+                    p.remove(index);
+                    return new CursorPos<>(p, 0, pos);
+                }
+                case PUT: {
+                    int unsavedMemory = 0;
+                    V value = selectValue(result, providedValue);
+                    p = p.copy();
+                    if (index < 0) {
+                        p.insertLeaf(-index - 1, key, value);
+                        int keyCount;
+                        MVStore store = map.store;
+                        while ((keyCount = p.getKeyCount()) > store.getKeysPerPage()
+                                || p.getMemory() > store.getMaxPageSize()
+                                && keyCount > (p.isLeaf() ? 1 : 2)) {
+                            long totalCount = p.getTotalCount();
+                            int at = keyCount >> 1;
+                            K k = p.getKey(at);
+                            Page<K,V> split = p.split(at);
+                            unsavedMemory += p.getMemory() + split.getMemory();
+                            // if root was split, create a new root with two children (increase tree height)
+                            if (pos == null) {
+                                K[] keys = p.createKeyStorage(1);
+                                keys[0] = k;
+                                Page.PageReference<K,V>[] children = Page.createRefStorage(2);
+                                children[0] = new Page.PageReference<>(p);
+                                children[1] = new Page.PageReference<>(split);
+                                p = Page.createNode(map, keys, children, totalCount, 0);
+                                return new CursorPos<>(p, unsavedMemory, pos);
+                            }
+                            Page<K,V> c = p;
+                            p = pos.page;
+                            index = pos.index;
+                            pos = pos.parent;
+                            p = p.copy();
+                            p.setChild(index, split);
+                            p.insertNode(index, k, c);
+                        }
+                    } else {
+                        p.setValue(index, value);
+                    }
+                    return new CursorPos<>(p, unsavedMemory, pos);
+                }
+                case ABORT:
+                    return tip;
+                case REPEAT:
+                default:
+                    return null;
+            }
+        }
+
+        /**
+         * Makes entry-level decision about how to proceed with the update.
          *
          * @param existingValue the old value
          * @param providedValue the new value
@@ -1758,8 +1868,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
     public V operate(K key, V value, DecisionMaker<V> decisionMaker) {
         CursorPos<K,V> tip = null;
         IntValueHolder unsavedMemoryHolder = new IntValueHolder();
-        int attempt = 0;
-        while(true) {
+        for (int attempt = 0;; decisionMaker.reset()) {
             RootReference<K,V> rootReference = flushAndGetRoot();
             boolean locked = rootReference.isLockedByCurrentThread();
             if (!locked) {
@@ -1773,117 +1882,34 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
             }
             Page<K,V> rootPage = rootReference.root;
             long version = rootReference.version;
-            V result;
-            unsavedMemoryHolder.value = 0;
             try {
                 tip = CursorPos.traverseDown(rootPage, key, tip);
                 if (!locked && rootReference != getRoot()) {
                     continue;
                 }
-                Page<K,V> p = tip.page;
-                int index = tip.index;
-                CursorPos<K,V> pos = tip.parent;
-                result = index < 0 ? null : p.getValue(index);
-                Decision decision = decisionMaker.decide(result, value, tip);
-
-                switch (decision) {
-                    case REPEAT:
-                        decisionMaker.reset();
+                CursorPos<K,V> cp = decisionMaker.decide(tip, key, value);
+                if (cp == null) {
+                    continue;
+                } else if (cp == tip) {
+                    if (!locked && rootReference != getRoot()) {
                         continue;
-                    case ABORT:
-                        if (!locked && rootReference != getRoot()) {
-                            decisionMaker.reset();
+                    }
+                } else {
+                    unsavedMemoryHolder.value = cp.index;
+                    rootPage = replacePage(cp.parent, cp.page, unsavedMemoryHolder);
+                    if (!locked) {
+                        rootReference = rootReference.updateRootPage(rootPage, attempt);
+                        if (rootReference == null) {
                             continue;
                         }
-                        return result;
-                    case REMOVE: {
-                        if (index < 0) {
-                            if (!locked && rootReference != getRoot()) {
-                                decisionMaker.reset();
-                                continue;
-                            }
-                            return null;
-                        }
-
-                        if (p.getTotalCount() == 1 && pos != null) {
-                            int keyCount;
-                            do {
-                                p = pos.page;
-                                index = pos.index;
-                                pos = pos.parent;
-                                keyCount = p.getKeyCount();
-                                // condition below should always be false, but older
-                                // versions (up to 1.4.197) may create
-                                // single-childed (with no keys) internal nodes,
-                                // which we skip here
-                            } while (keyCount == 0 && pos != null);
-
-                            if (keyCount <= 1) {
-                                if (keyCount == 1) {
-                                    assert index <= 1;
-                                    p = p.getChildPage(1 - index);
-                                } else {
-                                    // if root happens to be such single-childed
-                                    // (with no keys) internal node, then just
-                                    // replace it with empty leaf
-                                    p = Page.createEmptyLeaf(this);
-                                }
-                                break;
-                            }
-                        }
-                        p = p.copy();
-                        p.remove(index);
-                        break;
                     }
-                    case PUT: {
-                        value = decisionMaker.selectValue(result, value);
-                        p = p.copy();
-                        if (index < 0) {
-                            p.insertLeaf(-index - 1, key, value);
-                            int keyCount;
-                            while ((keyCount = p.getKeyCount()) > store.getKeysPerPage()
-                                    || p.getMemory() > store.getMaxPageSize()
-                                    && keyCount > (p.isLeaf() ? 1 : 2)) {
-                                long totalCount = p.getTotalCount();
-                                int at = keyCount >> 1;
-                                K k = p.getKey(at);
-                                Page<K,V> split = p.split(at);
-                                unsavedMemoryHolder.value += p.getMemory() + split.getMemory();
-                                // if root was split, create a new root with two children (increase tree height)
-                                if (pos == null) {
-                                    K[] keys = p.createKeyStorage(1);
-                                    keys[0] = k;
-                                    Page.PageReference<K,V>[] children = Page.createRefStorage(2);
-                                    children[0] = new Page.PageReference<>(p);
-                                    children[1] = new Page.PageReference<>(split);
-                                    p = Page.createNode(this, keys, children, totalCount, 0);
-                                    break;
-                                }
-                                Page<K,V> c = p;
-                                p = pos.page;
-                                index = pos.index;
-                                pos = pos.parent;
-                                p = p.copy();
-                                p.setChild(index, split);
-                                p.insertNode(index, k, c);
-                            }
-                        } else {
-                            p.setValue(index, value);
-                        }
-                        break;
+                    if (isPersistent()) {
+                        registerUnsavedMemory(unsavedMemoryHolder.value + tip.processRemovalInfo(version));
                     }
                 }
-                rootPage = replacePage(pos, p, unsavedMemoryHolder);
-                if (!locked) {
-                    rootReference = rootReference.updateRootPage(rootPage, attempt);
-                    if (rootReference == null) {
-                        decisionMaker.reset();
-                        continue;
-                    }
-                }
-                if (isPersistent()) {
-                    registerUnsavedMemory(unsavedMemoryHolder.value + tip.processRemovalInfo(version));
-                }
+                Page<K,V> p = tip.page;
+                int index = tip.index;
+                V result = index < 0 ? null : p.getValue(index);
                 return result;
             } finally {
                 if(locked) {

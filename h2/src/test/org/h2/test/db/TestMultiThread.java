@@ -15,6 +15,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -391,17 +392,20 @@ public class TestMultiThread extends TestDb implements Runnable {
 
     private final class ConcurrentUpdate2 extends Thread {
         private final String column;
+        private final CountDownLatch latch;
 
         Throwable exception;
 
-        ConcurrentUpdate2(String column) {
+        ConcurrentUpdate2(String column, CountDownLatch latch) {
             this.column = column;
+            this.latch = latch;
         }
 
         @Override
         public void run() {
             try (Connection c = getConnection("concurrentUpdate2;LOCK_TIMEOUT=10000")) {
                 PreparedStatement ps = c.prepareStatement("UPDATE TEST SET V = ? WHERE " + column + " = ?");
+                latch.countDown();
                 for (int test = 0; test < 1000; test++) {
                     for (int i = 0; i < 16; i++) {
                         ps.setInt(1, test);
@@ -429,8 +433,9 @@ public class TestMultiThread extends TestDb implements Runnable {
                     ps.executeUpdate();
                 }
             }
-            ConcurrentUpdate2 a = new ConcurrentUpdate2("A");
-            ConcurrentUpdate2 b = new ConcurrentUpdate2("B");
+            CountDownLatch latch = new CountDownLatch(2);
+            ConcurrentUpdate2 a = new ConcurrentUpdate2("A", latch);
+            ConcurrentUpdate2 b = new ConcurrentUpdate2("B", latch);
             a.start();
             b.start();
             a.join();
