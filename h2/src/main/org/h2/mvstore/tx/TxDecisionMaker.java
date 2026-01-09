@@ -12,6 +12,7 @@ import org.h2.mvstore.MVMap.Decision;
 import org.h2.mvstore.type.DataType;
 import org.h2.value.VersionedValue;
 
+import static org.h2.value.VersionedValue.NO_ENTRY_ID;
 import static org.h2.value.VersionedValue.NO_OPERATION_ID;
 
 /**
@@ -44,7 +45,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
     /**
      * Id for the undo log entry created for this modification
      */
-    private       long           undoKey;
+    private       long           undoKey = NO_ENTRY_ID;
 
     /**
      * Id of the last operation, we decided to
@@ -122,6 +123,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
                 // positive decision has been made already and undo record created,
                 // but map was updated afterward and undo record deletion required
                 transaction.logUndo();
+                undoKey = NO_ENTRY_ID;
             }
         }
         blockingTransaction = null;
@@ -133,7 +135,8 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
     @Override
     // always return value (ignores existingValue)
     public <T extends VersionedValue<V>> T selectValue(T existingValue, T providedValue) {
-        return (T) VersionedValueUncommitted.getInstance(undoKey, getNewValue(existingValue), lastValue);
+        return (T) VersionedValueUncommitted.getInstance(undoKey, getNewValue(existingValue), lastValue,
+                                                            TransactionStore.getEntryId(existingValue, undoKey));
     }
 
     /**

@@ -31,6 +31,9 @@ import org.h2.util.StringUtils;
 import org.h2.util.Utils;
 import org.h2.value.VersionedValue;
 
+import static org.h2.value.VersionedValue.NO_ENTRY_ID;
+import static org.h2.value.VersionedValue.NO_OPERATION_ID;
+
 /**
  * A store that supports concurrent MVCC read-committed transactions.
  */
@@ -374,6 +377,29 @@ public class TransactionStore implements AutoCloseable
     }
 
     /**
+     * Determine entry id from provided value, if available, or take initial value from provided undoKey.
+     *
+     * @param versionedValue
+     * @param undoKey
+     * @return
+     */
+    static long getEntryId(VersionedValue<?> versionedValue, long undoKey) {
+        long entryId = NO_ENTRY_ID;
+        if (versionedValue != null) {
+            long operationId = versionedValue.getOperationId();
+            if (operationId != NO_OPERATION_ID && getTransactionId(operationId) == getTransactionId(undoKey)) {
+                entryId = versionedValue.getEntryId();
+            }
+        }
+        if (entryId == NO_ENTRY_ID) {
+            long logId = getLogId(undoKey);
+            assert logId != NO_ENTRY_ID;
+            entryId = logId;
+        }
+        return entryId;
+    }
+
+    /**
      * Get the list of unclosed transactions that have pending writes.
      *
      * @return the list of transactions (sorted by id)
@@ -566,27 +592,33 @@ public class TransactionStore implements AutoCloseable
             // It does not change the way this transaction is treated by others,
             // but preserves fact of commit in case of abrupt termination.
             MVMap<Long,Record<?,?>> undoLog = undoLogs[transactionId];
-            if(!recovery) {
+            if (!recovery) {
                 markUndoLogAsCommitted(transactionId, commitingTx.getVersion());
             }
+
             Cursor<Long,Record<?,?>> cursor = undoLog.cursor(null);
 
-            CommitDecisionMaker<Object> commitDecisionMaker = new CommitDecisionMaker<>();
+            CommitDecisionMaker<Object> commitDecisionMaker = new CommitDecisionMaker<>(t, store.getKeysPerPage());
+
             try {
                 while (cursor.hasNext()) {
-                    Long undoKey = cursor.next();
-                    Record<?,?> op = cursor.getValue();
-                    int mapId = op.mapId;
+                    long undoKey = cursor.next();
+                    Record<?, ?> record = cursor.getValue();
+                    int mapId = record.mapId;
                     if (mapId < 0) {
-                        break;
+                        continue;
                     }
-                    MVMap<Object, VersionedValue<Object>> map = openMap(mapId);
-                    if (map != null && !map.isClosed()) { // might be null if map was removed later
-                        Object key = op.key;
-                        commitDecisionMaker.setUndoKey(undoKey);
-                        // second parameter (value) is not really
-                        // used by CommitDecisionMaker
-                        map.operate(key, null, commitDecisionMaker);
+                    long entryId = getEntryId(record.oldValue, undoKey);
+
+                    if (!commitDecisionMaker.haveSeenEntry((int) entryId)) {
+                        MVMap<Object, VersionedValue<Object>> map = openMap(mapId);
+                        if (map != null && !map.isClosed()) { // might be null if map was removed later
+                            Object key = record.key;
+                            commitDecisionMaker.setUndoKey(undoKey);
+                            // second parameter (value) is not really
+                            // used by CommitDecisionMaker
+                            map.operate(key, null, commitDecisionMaker);
+                        }
                     }
                 }
                 t.markStatementEnd();

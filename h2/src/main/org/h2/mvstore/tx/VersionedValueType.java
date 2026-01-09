@@ -15,6 +15,7 @@ import org.h2.mvstore.type.MetaType;
 import org.h2.mvstore.type.StatefulDataType;
 import org.h2.value.VersionedValue;
 
+import static org.h2.value.VersionedValue.NO_ENTRY_ID;
 import static org.h2.value.VersionedValue.NO_OPERATION_ID;
 
 /**
@@ -39,7 +40,7 @@ public class VersionedValueType<T,D> extends BasicDataType<VersionedValue<T>> im
     @Override
     public int getMemory(VersionedValue<T> v) {
         if(v == null) return 0;
-        int res = Constants.MEMORY_OBJECT + 8 + 2 * Constants.MEMORY_POINTER +
+        int res = Constants.MEMORY_OBJECT + 16 + 2 * Constants.MEMORY_POINTER +
                 getValMemory(v.getCurrentValue());
         if (v.getOperationId() != NO_OPERATION_ID) {
             res += getValMemory(v.getCommittedValue());
@@ -69,27 +70,23 @@ public class VersionedValueType<T,D> extends BasicDataType<VersionedValue<T>> im
 
     @Override
     public VersionedValue<T> read(ByteBuffer buff) {
-        long operationId = DataUtils.readVarLong(buff);
-        if (operationId == 0) {
-            return VersionedValueCommitted.getInstance(valueType.read(buff));
+        byte flags = buff.get();
+
+        long operationId = (flags & 1) != 0 ? DataUtils.readVarLong(buff) : NO_OPERATION_ID;
+        long entryId     = (flags & 2) != 0 ? DataUtils.readVarLong(buff) : NO_ENTRY_ID;
+        T value          = (flags & 4) != 0 ? valueType.read(buff) : null;
+        T committedValue = (flags & 8) != 0 ? valueType.read(buff) : null;
+
+        if (operationId == NO_OPERATION_ID) {
+            return VersionedValueCommitted.getInstance(value, entryId);
         } else {
-            byte flags = buff.get();
-            T value = (flags & 1) != 0 ? valueType.read(buff) : null;
-            T committedValue = (flags & 2) != 0 ? valueType.read(buff) : null;
-            return VersionedValueUncommitted.getInstance(operationId, value, committedValue);
+            return VersionedValueUncommitted.getInstance(operationId, value, committedValue, entryId);
         }
     }
 
     @Override
     public void write(WriteBuffer buff, Object storage, int len) {
-        boolean fastPath = true;
-        for (int i = 0; i < len; i++) {
-            VersionedValue<T> v = cast(storage)[i];
-            if (v.getOperationId() != 0 || v.getCurrentValue() == null) {
-                fastPath = false;
-            }
-        }
-        if (fastPath) {
+        if (isFastPath(storage, len)) {
             buff.put((byte) 0);
             for (int i = 0; i < len; i++) {
                 VersionedValue<T> v = cast(storage)[i];
@@ -105,22 +102,44 @@ public class VersionedValueType<T,D> extends BasicDataType<VersionedValue<T>> im
         }
     }
 
+    private boolean isFastPath(Object storage, int len) {
+        for (int i = 0; i < len; i++) {
+            VersionedValue<T> v = cast(storage)[i];
+            if (v == null
+                    || v.getOperationId() != NO_OPERATION_ID
+                    || v.getEntryId() != NO_ENTRY_ID
+                    || v.getCurrentValue() == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @Override
     public void write(WriteBuffer buff, VersionedValue<T> v) {
+        assert v != null;
         long operationId = v.getOperationId();
-        buff.putVarLong(operationId);
-        if (operationId == 0) {
-            valueType.write(buff, v.getCurrentValue());
-        } else {
-            T committedValue = v.getCommittedValue();
-            int flags = (v.getCurrentValue() == null ? 0 : 1) | (committedValue == null ? 0 : 2);
-            buff.put((byte) flags);
-            if (v.getCurrentValue() != null) {
-                valueType.write(buff, v.getCurrentValue());
-            }
-            if (committedValue != null) {
-                valueType.write(buff, committedValue);
-            }
+        long entryId = v.getEntryId();
+        T currentValue = v.getCurrentValue();
+        T committedValue = operationId == NO_OPERATION_ID ? null : v.getCommittedValue();
+        int flags = (operationId == NO_OPERATION_ID ? 0 : 1)
+                  | (entryId == NO_ENTRY_ID         ? 0 : 2)
+                  | (currentValue == null           ? 0 : 4)
+                  | (committedValue == null         ? 0 : 8);
+
+        buff.put((byte) flags);
+
+        if (operationId != NO_OPERATION_ID) {
+            buff.putVarLong(operationId);
+        }
+        if (entryId != NO_ENTRY_ID) {
+            buff.putVarLong(entryId);
+        }
+        if (currentValue != null) {
+            valueType.write(buff, currentValue);
+        }
+        if (committedValue != null) {
+            valueType.write(buff, committedValue);
         }
     }
 

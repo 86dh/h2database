@@ -406,9 +406,10 @@ public class TestMultiThread extends TestDb implements Runnable {
             try (Connection c = getConnection("concurrentUpdate2;LOCK_TIMEOUT=10000")) {
                 PreparedStatement ps = c.prepareStatement("UPDATE TEST SET V = ? WHERE " + column + " = ?");
                 latch.countDown();
-                for (int test = 0; test < 1000; test++) {
+                latch.await();
+                for (int test = 1; test < 1000; test++) {
                     for (int i = 0; i < 16; i++) {
-                        ps.setInt(1, test);
+                        ps.setInt(1, "A".equals(column) ? -test : test);
                         ps.setInt(2, i);
                         assertEquals(16, ps.executeUpdate());
                     }

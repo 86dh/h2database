@@ -1855,6 +1855,12 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
          * so we can re-start update process.
          */
         public void reset() {}
+
+        /**
+         * DecisionMaker gets notified when proposed updated page was successfully injected into the B-tree
+         * to provide opportunity for internal state maintance.
+         */
+        public void onPageReplaced() {}
     }
 
     /**
@@ -1871,6 +1877,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         for (int attempt = 0;; decisionMaker.reset()) {
             RootReference<K,V> rootReference = flushAndGetRoot();
             boolean locked = rootReference.isLockedByCurrentThread();
+            assert attempt > 0 || !locked : attempt + " " + rootReference;
             if (!locked) {
                 if (attempt++ == 0) {
                     beforeWrite();
@@ -1906,6 +1913,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
                     if (isPersistent()) {
                         registerUnsavedMemory(unsavedMemoryHolder.value + tip.processRemovalInfo(version));
                     }
+                    decisionMaker.onPageReplaced();
                 }
                 Page<K,V> p = tip.page;
                 int index = tip.index;

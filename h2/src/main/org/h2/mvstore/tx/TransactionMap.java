@@ -294,7 +294,8 @@ public final class TransactionMap<K, V> extends AbstractMap<K,V> {
      */
     public void append(K key, V value) {
         long undoKey = transaction.log(map.getId(), key, null);
-        map.append(key, VersionedValueUncommitted.getInstance(undoKey, value, null));
+        long entryId = TransactionStore.getLogId(undoKey);
+        map.append(key, VersionedValueUncommitted.getInstance(undoKey, value, null, entryId));
         hasChanges = true;
     }
 

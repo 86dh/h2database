@@ -151,7 +151,7 @@ public abstract class Page<K,V> implements Cloneable {
      * @param map the map
      * @return the new page
      */
-    static <K,V> Page<K,V> createEmptyLeaf(MVMap<K,V> map) {
+    public static <K,V> Page<K,V> createEmptyLeaf(MVMap<K,V> map) {
         return createLeaf(map, map.getKeyType().createStorage(0),
                 map.getValueType().createStorage(0), PAGE_LEAF_MEMORY);
     }
@@ -462,6 +462,16 @@ public abstract class Page<K,V> implements Cloneable {
         System.arraycopy(keys, 0, newKeys, 0, keyCount);
         System.arraycopy(extraKeys, 0, newKeys, keyCount, extraKeyCount);
         keys = newKeys;
+    }
+
+    /**
+     * Create copy of this page with specified entries removed.
+     *
+     * @param positionsToRemove bit set of positions to remove
+     * @return modified copy of this page
+     */
+    public Page<K,V> remove(long positionsToRemove) {
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -1563,6 +1573,27 @@ public abstract class Page<K,V> implements Cloneable {
             if(isPersistent()) {
                 recalculateMemory();
             }
+        }
+
+        @Override
+        public Page<K,V> remove(long positionsToRemove) {
+            assert positionsToRemove != 0;
+            int keyCount = getKeyCount() - Long.bitCount(positionsToRemove);
+            if (keyCount == 0) {
+                return map.createEmptyLeaf();
+            }
+            K[] newKeys = createKeyStorage(keyCount);
+            V[] newValues = values == null ? null : createValueStorage(keyCount);
+            for(int src = 0, dst = 0; dst < keyCount; ++src, positionsToRemove >>>= 1) {
+                if ((positionsToRemove & 1L) == 0) {
+                    newKeys[dst] = getKey(src);
+                    if (newValues != null) {
+                        newValues[dst] = values[src];
+                    }
+                    ++dst;
+                }
+            }
+            return createLeaf(map, newKeys, newValues, 0);
         }
 
         @Override

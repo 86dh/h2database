@@ -406,7 +406,7 @@ public final class Transaction {
         }
         int currentStatus = getStatus(currentState);
         checkOpen(currentStatus);
-       long undoKey = store.addUndoLogRecord(transactionId, logId, new Record<>(mapId, key, oldValue));
+        long undoKey = store.addUndoLogRecord(transactionId, logId, new Record<>(mapId, key, oldValue));
         return undoKey;
     }
 

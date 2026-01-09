@@ -13,6 +13,7 @@ package org.h2.value;
  */
 public abstract class VersionedValue<T> {
 
+    public static final long NO_ENTRY_ID = -1L;
     public static final long NO_OPERATION_ID = 0L;
 
     protected VersionedValue() {}
@@ -23,6 +24,10 @@ public abstract class VersionedValue<T> {
 
     public long getOperationId() {
         return NO_OPERATION_ID;
+    }
+
+    public long getEntryId() {
+        return NO_ENTRY_ID;
     }
 
     @SuppressWarnings("unchecked")

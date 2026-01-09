@@ -12,12 +12,13 @@ import org.h2.value.VersionedValue;
  *
  * @author <a href='mailto:andrei.tokar@gmail.com'>Andrei Tokar</a>
  */
-class VersionedValueUncommitted<T> extends VersionedValueCommitted<T> {
+final class VersionedValueUncommitted<T> extends VersionedValueCommitted<T>
+{
     private final long operationId;
     private final T committedValue;
 
-    private VersionedValueUncommitted(long operationId, T value, T committedValue) {
-        super(value);
+    private VersionedValueUncommitted(long operationId, T value, T committedValue, long entryId) {
+        super(value, entryId);
         assert operationId != 0;
         this.operationId = operationId;
         this.committedValue = committedValue;
@@ -33,8 +34,8 @@ class VersionedValueUncommitted<T> extends VersionedValueCommitted<T> {
      * @param committedValue value after commit
      * @return VersionedValue instance
      */
-    static <X> VersionedValue<X> getInstance(long operationId, X value, X committedValue) {
-        return new VersionedValueUncommitted<>(operationId, value, committedValue);
+    static <X> VersionedValue<X> getInstance(long operationId, X value, X committedValue, long entryId) {
+        return new VersionedValueUncommitted<>(operationId, value, committedValue, entryId);
     }
 
     @Override
@@ -56,6 +57,6 @@ class VersionedValueUncommitted<T> extends VersionedValueCommitted<T> {
     public String toString() {
         return super.toString() +
                 " " + TransactionStore.getTransactionId(operationId) + "/" +
-                TransactionStore.getLogId(operationId) + " " + committedValue;
+                TransactionStore.getLogId(operationId) + "/" + getEntryId() + " " + committedValue;
     }
 }
