@@ -74,6 +74,11 @@ public class ConvertTraceFile extends Tool {
         new ConvertTraceFile().runTool(args);
     }
 
+    /**
+     * Creates default instance
+     */
+    public ConvertTraceFile() {}
+
     @Override
     public void runTool(String... args) throws SQLException {
         String traceFile = "test.trace.db";

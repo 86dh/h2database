@@ -81,6 +81,11 @@ public class Shell extends Tool implements Runnable {
     }
 
     /**
+     * Creates default instance
+     */
+    public Shell() {}
+
+    /**
      * Sets the standard error stream.
      *
      * @param err the new standard error stream

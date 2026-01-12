@@ -50,6 +50,11 @@ public class CreateCluster extends Tool {
         new CreateCluster().runTool(args);
     }
 
+    /**
+     * Creates default instance
+     */
+    public CreateCluster() {}
+
     @Override
     public void runTool(String... args) throws SQLException {
         String urlSource = null;

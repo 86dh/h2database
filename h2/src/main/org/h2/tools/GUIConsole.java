@@ -57,6 +57,11 @@ public class GUIConsole extends Console implements ActionListener, MouseListener
     private Object tray;
     private Object trayIcon;
 
+    /**
+     * Creates default instance
+     */
+    public GUIConsole() {}
+
     @Override
     protected String getMainClassName() {
         return Console.class.getName();

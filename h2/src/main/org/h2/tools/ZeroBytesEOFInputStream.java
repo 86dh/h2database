@@ -21,6 +21,10 @@ public class ZeroBytesEOFInputStream extends InputStream {
     private static final int MAX_ZERO_READS = 10;
     private boolean eofReached = false;
 
+    /**
+     * Creates ZeroBytesEOFInputStream instance
+     * @param wrapped stream
+     */
     public ZeroBytesEOFInputStream(InputStream wrapped) {
         this.wrapped = wrapped;
     }

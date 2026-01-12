@@ -105,6 +105,11 @@ public class Recover extends Tool implements DataHandler {
     }
 
     /**
+     * Creates default instance
+     */
+    public Recover() {}
+
+    /**
      * Dumps the contents of a database file to a human readable text file. This
      * text file can be used to recover most of the data. This tool does not
      * open the database and can be used even if the database files are

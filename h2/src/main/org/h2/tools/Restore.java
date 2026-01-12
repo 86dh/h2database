@@ -46,6 +46,11 @@ public class Restore extends Tool {
         new Restore().runTool(args);
     }
 
+    /**
+     * Creates default instance
+     */
+    public Restore() {}
+
     @Override
     public void runTool(String... args) throws SQLException {
         String zipFileName = "backup.zip";

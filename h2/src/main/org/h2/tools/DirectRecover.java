@@ -208,6 +208,11 @@ public class DirectRecover extends Recover {
     }
 
     /**
+     * Creates default instance
+     */
+    public DirectRecover() {}
+
+    /**
      * Enhanced runTool method with compression support.
      */
     @Override

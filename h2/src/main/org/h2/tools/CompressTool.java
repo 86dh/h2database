@@ -37,11 +37,11 @@ import org.h2.util.Utils;
  */
 public class CompressTool {
 
-    public static final String KANZI_OUTPUT_CLASS_NAME = "io.github.flanglet.kanzi.io.CompressedOutputStream";
-    public static final String KANZI_INPUT_CLASS_NAME = "io.github.flanglet.kanzi.io.CompressedInputStream";
-    public static final String BZIP2_OUTPUT_CLASS_NAME //
+    static final String KANZI_OUTPUT_CLASS_NAME = "io.github.flanglet.kanzi.io.CompressedOutputStream";
+    static final String KANZI_INPUT_CLASS_NAME = "io.github.flanglet.kanzi.io.CompressedInputStream";
+    static final String BZIP2_OUTPUT_CLASS_NAME //
             = "org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream";
-    public static final String BZIP2_INPUT_CLASS_NAME //
+    static final String BZIP2_INPUT_CLASS_NAME //
             = "org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream";
 
     private static final int MAX_BUFFER_SIZE = 3 * Constants.IO_BUFFER_SIZE_COMPRESS;
@@ -54,6 +54,8 @@ public class CompressTool {
 
     /**
      * Creates a BZip2 compressing output stream using reflection.
+     * @param baseOutputStream to compress
+     * @return compressed stream
      */
     public static OutputStream createBZip2OutputStream(OutputStream baseOutputStream) {
         try {
@@ -70,6 +72,8 @@ public class CompressTool {
 
     /**
      * Creates a BZip2 decompressing input stream using reflection.
+     * @param inputStream to decompress
+     * @return decompressed stream
      */
     public static InputStream createBZip2InputStream(InputStream inputStream) {
         try {
@@ -86,6 +90,9 @@ public class CompressTool {
 
     /**
      * Creates a Kanzi compressing output stream using reflection.
+     * @param baseOutputStream to compress
+     * @param executor for multithreaded execution
+     * @return compressed stream
      */
     public static OutputStream createKanziOutputStream(OutputStream baseOutputStream, ExecutorService executor) {
         try {
@@ -130,6 +137,9 @@ public class CompressTool {
 
     /**
      * Creates a Kanzi decompressing input stream using reflection.
+     * @param inputStream to decompress
+     * @param executor for multithreaded execution
+     * @return decompressed stream
      */
     public static InputStream createKanziInputStream(InputStream inputStream, ExecutorService executor) {
         try {
