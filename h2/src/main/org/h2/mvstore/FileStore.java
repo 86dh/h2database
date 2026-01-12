@@ -23,6 +23,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -170,6 +171,13 @@ public abstract class FileStore<C extends Chunk<C>>
     protected volatile C lastChunk;
 
     /**
+     * Chunks that was recently allocated and saved, but their metadata is not
+     * present in layout map yet. This can't happen before chunk is allocated,
+     * but preferably should be done right before next chunk is created.
+     */
+    private final Queue<C> recentlySaved = new LinkedList<>();
+
+    /**
      * Identifier of the last created chunk.
      * It is different from {@link lastChunk.id}, because process is pipelined -
      * chunk creation / serialization and space allocation / save are handled
@@ -195,7 +203,7 @@ public abstract class FileStore<C extends Chunk<C>>
     private final Queue<WriteBuffer> writeBufferPool = new ArrayBlockingQueue<>(PIPE_LENGTH + 1);
 
     /**
-     * The layout map. Contains chunk's metadata and root locations for all maps.
+     * The layout map. Contains metadata for all chunks and root locations for all maps.
      * This is relatively fast changing part of metadata
      */
     private MVMap<String, String> layout;
@@ -1405,11 +1413,10 @@ public abstract class FileStore<C extends Chunk<C>>
     private void serializeAndStore(boolean syncRun, ArrayList<Page<?,?>> changed, long time, long version) {
         serializationLock.lock();
         try {
-            C lastChunk = null;
             int chunkId = lastChunkId;
             if (chunkId != 0) {
                 chunkId &= Chunk.MAX_ID;
-                lastChunk = chunks.get(chunkId);
+                C lastChunk = chunks.get(chunkId);
                 assert lastChunk != null : lastChunkId + " ("+chunkId+") " + chunks;
                 // never go backward in time
                 time = Math.max(lastChunk.time, time);
@@ -1420,7 +1427,7 @@ public abstract class FileStore<C extends Chunk<C>>
                 c = createChunk(time, version);
                 chunks.put(c.id, c);
                 buff = getWriteBuffer();
-                serializeToBuffer(buff, changed, c, lastChunk);
+                serializeToBuffer(buff, changed, c);
             } catch (Throwable t) {
                 lastChunkId = chunkId;
                 throw t;
@@ -1440,7 +1447,7 @@ public abstract class FileStore<C extends Chunk<C>>
         }
     }
 
-    private void serializeToBuffer(WriteBuffer buff, ArrayList<Page<?, ?>> changed, C c, C previousChunk) {
+    private void serializeToBuffer(WriteBuffer buff, ArrayList<Page<?, ?>> changed, C c) {
         // need to patch the header later
         int headerLength = c.estimateHeaderSize();
         buff.position(headerLength);
@@ -1461,14 +1468,13 @@ public abstract class FileStore<C extends Chunk<C>>
 
         acceptChunkOccupancyChanges(c.time, version);
 
-        if (previousChunk != null && previousChunk.isAllocated()) {
-            // the metadata of the last chunk was not stored in the layout map yet,
-            // just was embedded into the chunk itself, and this need to be done now
-            // (it's better not to update right after storing, because that
-            // would modify the meta map again)
-            if (!layout.containsKey(Chunk.getMetaKey(previousChunk.id))) {
-                saveChunkMetadataChanges(previousChunk);
-            }
+        // metadata of some recent chunks has not been saved in the layout map yet,
+        // just was embedded into the chunk itself, and this need to be done now
+        // (it's better not to update right after storing,
+        // because that would modify the layout map again)
+        C recentlySavedChunk;
+        while((recentlySavedChunk = recentlySaved.poll()) != null) {
+            saveChunkMetadataChanges(recentlySavedChunk);
         }
 
         RootReference<String,String> layoutRootReference = layout.setWriteVersion(version);
@@ -1510,6 +1516,7 @@ public abstract class FileStore<C extends Chunk<C>>
             int headerLength = (int)c.next;
 
             allocateChunkSpace(c, buff);
+            recentlySaved.offer(c);
 
             buff.position(0);
             c.writeChunkHeader(buff, headerLength);
