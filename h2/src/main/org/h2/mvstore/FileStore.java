@@ -23,7 +23,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -37,6 +36,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -174,12 +174,14 @@ public abstract class FileStore<C extends Chunk<C>>
      * Chunks that was recently allocated and saved, but their metadata is not
      * present in layout map yet. This can't happen before chunk is allocated,
      * but preferably should be done right before next chunk is created.
+     * It has to be thread-safe, because producer and consumer are using different
+     * locks ({@link #saveChunkLock} and {@link #serializationLock} respectively).
      */
-    private final Queue<C> recentlySaved = new LinkedList<>();
+    private final Queue<C> recentlySaved = new LinkedBlockingQueue<>();
 
     /**
      * Identifier of the last created chunk.
-     * It is different from {@link lastChunk.id}, because process is pipelined -
+     * It is different from {@link #lastChunk.id}, because process is pipelined -
      * chunk creation / serialization and space allocation / save are handled
      * by two dedicated threads, therefore more than one chunk might be in that pipeline.
      */
@@ -288,6 +290,19 @@ public abstract class FileStore<C extends Chunk<C>>
         if (allowedCompactionTime > 0) {
             compactStore(allowedCompactionTime);
         }
+
+        serializationLock.lock();
+        try {
+            // if there are no outstanding changes in data maps,
+            // but some recently saved chunk(s), apart from the latest one,
+            // are not reflected in layout map yet,
+            // we need to force new chunk creation by modifying layout map here
+            saveRecentChunksInLayout(mvStore.getCurrentVersion());
+        } finally {
+            serializationLock.unlock();
+        }
+
+
         mvStore.commit();
         writeCleanShutdown();
         clearCaches();
@@ -507,6 +522,7 @@ public abstract class FileStore<C extends Chunk<C>>
                 saveChunkLock.lock();
                 try {
                     deadChunks.clear();
+                    recentlySaved.clear();
                     setLastChunk(keep);
                     adjustStoreToLastChunk();
                 } finally {
@@ -1472,10 +1488,7 @@ public abstract class FileStore<C extends Chunk<C>>
         // just was embedded into the chunk itself, and this need to be done now
         // (it's better not to update right after storing,
         // because that would modify the layout map again)
-        C recentlySavedChunk;
-        while((recentlySavedChunk = recentlySaved.poll()) != null) {
-            saveChunkMetadataChanges(recentlySavedChunk);
-        }
+        saveRecentChunksInLayout(version);
 
         RootReference<String,String> layoutRootReference = layout.setWriteVersion(version);
         assert layoutRootReference != null;
@@ -1504,6 +1517,19 @@ public abstract class FileStore<C extends Chunk<C>>
         buff.limit(length);
         c.len = buff.limit() / FileStore.BLOCK_SIZE;
         c.buffer = buff.getBuffer();
+    }
+
+    private void saveRecentChunksInLayout(long currentVersion) {
+        C recentlySavedChunk;
+        while((recentlySavedChunk = recentlySaved.peek()) != null
+                    // if it's a leftover after store rollback
+                    && recentlySavedChunk.version < currentVersion) {
+            recentlySavedChunk = recentlySaved.poll();
+            recentlySavedChunk = chunks.get(recentlySavedChunk.id);
+            if (recentlySavedChunk != null) {
+                saveChunkMetadataChanges(recentlySavedChunk);
+            }
+        }
     }
 
     private void storeBuffer(C c, WriteBuffer buff) {

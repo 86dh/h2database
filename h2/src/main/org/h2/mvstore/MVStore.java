@@ -812,12 +812,12 @@ public final class MVStore implements AutoCloseable {
                     try {
                         if (normalShutdown && fileStore != null && !fileStore.isReadOnly()) {
                             compactFully = allowedCompactionTime == -1 && fileStoreShallBeClosed;
-                            commit();
                             for (MVMap<?, ?> map : maps.values()) {
                                 if (map.isClosed()) {
                                     fileStore.deregisterMapRoot(map.getId());
                                 }
                             }
+                            commit();
                             setRetentionTime(0);
                             fileStore.stop(compactFully ? 0 : allowedCompactionTime);
                             assert oldestVersionToKeep.get() == currentVersion : oldestVersionToKeep.get() + " != "
