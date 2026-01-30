@@ -62,8 +62,8 @@ public final class CursorPos<K,V> {
                 index = page.calculateTraversalIndex(key);
                 cursorPos = new CursorPos<>(page, index, cursorPos);
             } else {
-                Page<K, V> existinPage = existing.page;
-                if (existinPage == page) {
+                Page<K, V> existingPage = existing.page;
+                if (existingPage == page) {
                     // If we hit exactly the same page, as previous time, that means that subtree under this page
                     // also hasn't been modified since last attempt. Further traversal therefore is going to follow
                     // exactly same path, so lets just copy it from existing CursopPos chain
@@ -78,7 +78,7 @@ public final class CursorPos<K,V> {
                 existing = temp;
                 // if we hit page with exact set of keys, as last time,
                 // there is no need to do a key search again, use previous result
-                if (!page.sameKeys(existinPage)) {
+                if (!page.sameKeys(existingPage)) {
                     cursorPos.index = page.calculateTraversalIndex(key);
                 }
                 index = cursorPos.index;

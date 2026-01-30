@@ -591,18 +591,18 @@ public class TableLink extends Table {
     }
 
     @Override
-    public void updateRows(Prepared prepared, SessionLocal session, LocalResult rows) {
+    public void updateRows(SessionLocal session, LocalResult rows, Runnable cancellationCheck) {
         checkReadOnly();
         if (emitUpdates) {
             while (rows.next()) {
-                prepared.checkCanceled();
+                cancellationCheck.run();
                 Row oldRow = rows.currentRowForTable();
                 rows.next();
                 Row newRow = rows.currentRowForTable();
                 linkedIndex.update(oldRow, newRow, session);
             }
         } else {
-            super.updateRows(prepared, session, rows);
+            super.updateRows(session, rows, cancellationCheck);
         }
     }
 

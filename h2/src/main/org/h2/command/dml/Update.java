@@ -89,7 +89,7 @@ public final class Update extends FilteredDataChangeStatement {
         // we need to update all indexes) before row triggers
 
         // the cached row is already updated - we need the old values
-        table.updateRows(prepared, session, rows);
+        table.updateRows(session, rows, prepared::checkCanceled);
         if (table.fireRow()) {
             for (rows.reset(); rows.next();) {
                 Row o = rows.currentRowForTable();

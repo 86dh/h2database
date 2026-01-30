@@ -240,7 +240,7 @@ public abstract class Table extends SchemaObject {
      * @throws DbException if a constraint was violated
      */
     public void updateRow(SessionLocal session, Row oldRow, Row newRow) {
-        newRow.setKey(oldRow.getKey());
+        assert oldRow.getKey() == newRow.getKey();
         removeRow(session, oldRow);
         addRow(session, newRow);
     }
@@ -510,7 +510,6 @@ public abstract class Table extends SchemaObject {
      * @param session the session
      * @return true if it is
      */
-    @SuppressWarnings("unused")
     public boolean isLockedExclusivelyBy(SessionLocal session) {
         return false;
     }
@@ -518,19 +517,19 @@ public abstract class Table extends SchemaObject {
     /**
      * Update a list of rows in this table.
      *
-     * @param prepared the prepared statement
      * @param session the session
      * @param rows a list of row pairs of the form old row, new row, old row,
      *            new row,...
+     * @param cancellationCheck action executed periodically to check cancellation
      */
-    public void updateRows(Prepared prepared, SessionLocal session, LocalResult rows) {
+    public void updateRows(SessionLocal session, LocalResult rows, Runnable cancellationCheck) {
         // in case we need to undo the update
         SessionLocal.Savepoint rollback = session.setSavepoint();
         // remove the old rows
         int rowScanCount = 0;
         while (rows.next()) {
             if ((++rowScanCount & 127) == 0) {
-                prepared.checkCanceled();
+                cancellationCheck.run();
             }
             Row o = rows.currentRowForTable();
             rows.next();
@@ -548,7 +547,7 @@ public abstract class Table extends SchemaObject {
         rows.reset();
         while (rows.next()) {
             if ((++rowScanCount & 127) == 0) {
-                prepared.checkCanceled();
+                cancellationCheck.run();
             }
             rows.next();
             Row n = rows.currentRowForTable();

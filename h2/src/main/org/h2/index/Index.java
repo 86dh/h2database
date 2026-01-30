@@ -7,6 +7,7 @@ package org.h2.index;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Objects;
 
 import org.h2.api.ErrorCode;
 import org.h2.command.query.AllColumnsForPlan;
@@ -362,6 +363,30 @@ public abstract class Index extends SchemaObject {
      */
     public long getDiskSpaceUsed(boolean approximate) {
         return 0L;
+    }
+
+    /**
+     * Determine if two given rows would result in the same entry in this index
+     *
+     * @param rowOne first row to compare
+     * @param rowTwo second row to compare
+     * @return true if rows are equvalent from this index point of view
+     */
+    public boolean areRowsEquivalent(Row rowOne, Row rowTwo) {
+        if (rowOne == rowTwo) {
+            return true;
+        }
+        if (rowOne.getKey() != rowTwo.getKey()) {
+            return false;
+        }
+        for (int index : columnIds) {
+            Value v1 = rowOne.getValue(index);
+            Value v2 = rowTwo.getValue(index);
+            if (!Objects.equals(v1, v2)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

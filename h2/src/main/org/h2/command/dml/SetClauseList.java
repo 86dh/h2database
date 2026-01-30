@@ -20,6 +20,7 @@ import org.h2.message.DbException;
 import org.h2.result.LocalResult;
 import org.h2.result.ResultTarget;
 import org.h2.result.Row;
+import org.h2.result.SearchRow;
 import org.h2.table.Column;
 import org.h2.table.ColumnResolver;
 import org.h2.table.DataChangeDeltaTable.ResultOption;
@@ -145,7 +146,7 @@ public final class SetClauseList implements HasSQL {
             }
             newRow.setValue(i, newValue);
         }
-        newRow.setKey(oldRow.getKey());
+
         table.convertUpdateRow(session, newRow, false);
         boolean result = true;
         if (onUpdate) {
@@ -166,6 +167,10 @@ public final class SetClauseList implements HasSQL {
         } else if (updateToCurrentValuesReturnsZero && oldRow.hasSameValues(newRow)) {
             result = false;
         }
+
+        int mainIndexColumn = table.getMainIndexColumn();
+        newRow.setKey(mainIndexColumn == SearchRow.ROWID_INDEX ? oldRow.getKey() : newRow.getValue(mainIndexColumn).getLong());
+
         if (deltaChangeCollectionMode == ResultOption.OLD) {
             deltaChangeCollector.addRow(oldRow.getValueList());
         } else if (deltaChangeCollectionMode == ResultOption.NEW) {
