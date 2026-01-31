@@ -379,9 +379,9 @@ public class TransactionStore implements AutoCloseable
     /**
      * Determine entry id from provided value, if available, or take initial value from provided undoKey.
      *
-     * @param versionedValue
-     * @param undoKey
-     * @return
+     * @param versionedValue to extract entry id from
+     * @param undoKey for entry to be identified
+     * @return entry id, which is a transaction log id for the first update to a map entry within transaction
      */
     static long getEntryId(VersionedValue<?> versionedValue, long undoKey) {
         long entryId = NO_ENTRY_ID;
