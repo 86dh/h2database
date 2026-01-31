@@ -548,11 +548,9 @@ public abstract class Chunk<C extends Chunk<C>> {
      *            removal is recorded, and retention period starts
      * @param version
      *            at which page was removed
-     * @return true if all of the pages, this chunk contains, were already
-     *         removed, and false otherwise
+     * @return true if all the pages, this chunk contains, were already removed, and false otherwise
      */
     boolean accountForRemovedPage(int pageNo, int pageLength, boolean pinned, long now, long version) {
-        assert buffer != null || isAllocated() : this;
         // legacy chunks do not have a table of content,
         // therefore pageNo is not valid, skip
         if (tocPos > 0) {

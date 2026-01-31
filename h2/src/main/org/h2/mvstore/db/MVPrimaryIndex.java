@@ -159,10 +159,6 @@ public final class MVPrimaryIndex extends MVIndex<Long, SearchRow> {
 
     @Override
     public void update(SessionLocal session, Row oldRow, Row newRow) {
-        if (mainIndexColumn != SearchRow.ROWID_INDEX) {
-            long c = newRow.getValue(mainIndexColumn).getLong();
-            newRow.setKey(c);
-        }
         long key = oldRow.getKey();
         assert mainIndexColumn != SearchRow.ROWID_INDEX || key != 0;
         assert key == newRow.getKey() : key + " != " + newRow.getKey();
@@ -187,11 +183,11 @@ public final class MVPrimaryIndex extends MVIndex<Long, SearchRow> {
 
         TransactionMap<Long,SearchRow> map = getMap(session);
         try {
-            Row existing = (Row)map.put(key, newRow);
+            Object existing = map.put(key, newRow);
             if (existing == null) {
                 StringBuilder builder = new StringBuilder();
                 getSQL(builder, TRACE_SQL_FLAGS).append(": ").append(key);
-                throw DbException.get(ErrorCode.ROW_NOT_FOUND_WHEN_DELETING_1, builder.toString());
+                throw DbException.get(ErrorCode.ROW_NOT_FOUND_IN_PRIMARY_INDEX, builder.toString());
             }
         } catch (MVStoreException e) {
             throw mvTable.convertException(e);
@@ -435,6 +431,11 @@ public final class MVPrimaryIndex extends MVIndex<Long, SearchRow> {
     @Override
     public boolean isRowIdIndex() {
         return true;
+    }
+
+    @Override
+    public boolean areRowsEquivalent(Row rowOne, Row rowTwo) {
+        return rowOne == rowTwo || rowOne.getKey() == rowTwo.getKey();
     }
 
     /**

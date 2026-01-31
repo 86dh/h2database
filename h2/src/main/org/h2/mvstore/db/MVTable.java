@@ -713,10 +713,53 @@ public class MVTable extends TableBase {
     }
 
     @Override
-    public void updateRows(Prepared prepared, SessionLocal session, LocalResult rows) {
-        super.updateRows(prepared, session, rows);
+    public void updateRows(SessionLocal session, LocalResult rows, Runnable cancellationCheck) {
+        // in case we need to undo the update
+        SessionLocal.Savepoint rollback = session.setSavepoint();
+        try {
+            int rowScanCount = 0;
+            while (rows.next()) {
+                if ((++rowScanCount & 127) == 0) {
+                    cancellationCheck.run();
+                }
+                Row oldRow = rows.currentRowForTable();
+                rows.next();
+                Row newRow = rows.currentRowForTable();
+                for (Index index : indexes) {
+                    if (!index.areRowsEquivalent(oldRow, newRow)) {
+                        index.remove(session, oldRow);
+                    } else if (index.isRowIdIndex()) {
+                        index.update(session, oldRow, newRow);
+                    }
+                }
+
+            }
+            rows.reset();
+            while (rows.next()) {
+                if ((++rowScanCount & 127) == 0) {
+                    cancellationCheck.run();
+                }
+                Row oldRow = rows.currentRowForTable();
+                rows.next();
+                Row newRow = rows.currentRowForTable();
+                for (Index index : indexes) {
+                    if (!index.areRowsEquivalent(oldRow, newRow)) {
+                        index.add(session, newRow);
+                    }
+                }
+            }
+        } catch (DbException e) {
+            if (e.getErrorCode() == ErrorCode.CONCURRENT_UPDATE_1
+                    || e.getErrorCode() == ErrorCode.ROW_NOT_FOUND_WHEN_DELETING_1
+                    || e.getErrorCode() == ErrorCode.STATEMENT_WAS_CANCELED) {
+                session.rollbackTo(rollback);
+            }
+            throw e;
+        }
+
         if (rows.getRowCount() > 0) {
             session.registerTableAsUpdated(this);
+            analyzeIfRequired(session);
         }
     }
 

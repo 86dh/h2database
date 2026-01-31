@@ -65,6 +65,11 @@ public class Csv implements SimpleRowSource {
     private Writer output;
     private boolean endOfLine, endOfFile;
 
+    /**
+     * Creates default instance
+     */
+    public Csv() {}
+
     private int writeResultSet(ResultSet rs) throws SQLException {
         try {
             int rows = 0;

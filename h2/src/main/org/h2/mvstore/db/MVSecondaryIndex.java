@@ -244,25 +244,9 @@ public final class MVSecondaryIndex extends MVIndex<SearchRow, Value> {
 
     @Override
     public void update(SessionLocal session, Row oldRow, Row newRow) {
-        SearchRow searchRowOld = convertToKey(oldRow, null);
-        SearchRow searchRowNew = convertToKey(newRow, null);
-        if (!rowsAreEqual(searchRowOld, searchRowNew)) {
+        if (!areRowsEquivalent(oldRow, newRow)) {
             super.update(session, oldRow, newRow);
         }
-    }
-
-    private boolean rowsAreEqual(SearchRow rowOne, SearchRow rowTwo) {
-        if (rowOne == rowTwo) {
-            return true;
-        }
-        for (int index : columnIds) {
-            Value v1 = rowOne.getValue(index);
-            Value v2 = rowTwo.getValue(index);
-            if (!Objects.equals(v1, v2)) {
-                return false;
-            }
-        }
-        return rowOne.getKey() == rowTwo.getKey();
     }
 
     @Override

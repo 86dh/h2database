@@ -528,7 +528,8 @@ public class JdbcConnection extends TraceObject implements Connection, CastDataP
     public boolean isClosed() throws SQLException {
         try {
             debugCodeCall("isClosed");
-            return session == null || session.isClosed();
+            Session s = session;
+            return s == null || s.isClosed();
         } catch (Exception e) {
             throw logAndConvert(e);
         }
@@ -1657,9 +1658,11 @@ public class JdbcConnection extends TraceObject implements Connection, CastDataP
             } else {
                 clientInfo.clear();
             }
-            for (Map.Entry<Object, Object> entry : properties.entrySet()) {
-                setClientInfo((String) entry.getKey(),
-                        (String) entry.getValue());
+            if (properties != null) {
+                for (Map.Entry<Object, Object> entry : properties.entrySet()) {
+                    setClientInfo((String) entry.getKey(),
+                            (String) entry.getValue());
+                }
             }
         } catch (Exception e) {
             throw convertToClientInfoException(logAndConvert(e));

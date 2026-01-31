@@ -44,6 +44,12 @@ public abstract class TriggerAdapter implements Trigger {
      */
     protected int type;
 
+
+    /**
+     * Creates default instance
+     */
+    public TriggerAdapter() {}
+
     /**
      * This method is called by the database engine once when initializing the
      * trigger. It is called when the trigger is created, as well as when the

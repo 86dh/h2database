@@ -27,6 +27,8 @@ public class Console extends Tool implements ShutdownHandler {
 
     boolean isWindows;
 
+    Console() {}
+
     /**
      * When running without options, -tcp, -web, -browser and -pg are started.
      *

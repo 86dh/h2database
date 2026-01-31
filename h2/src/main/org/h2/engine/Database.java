@@ -482,7 +482,7 @@ public final class Database implements DataHandler, CastDataProvider {
         if (powerOffCount != -1) {
             try {
                 powerOffCount = -1;
-                store.closeImmediately();
+                closeFiles();
                 if (lock != null) {
                     stopServer();
                     // allow testing shutdown
@@ -748,7 +748,6 @@ public final class Database implements DataHandler, CastDataProvider {
                 if (!cursor.next()) {
                     meta.addRow(session, r);
                 } else {
-                    assert starting;
                     Row oldRow = cursor.get();
                     MetaRecord rec = new MetaRecord(oldRow);
                     assert rec.getId() == obj.getId();
@@ -1332,7 +1331,9 @@ public final class Database implements DataHandler, CastDataProvider {
 
     private synchronized void closeFiles() {
         try {
-            store.closeImmediately();
+            if (store != null) {
+                store.closeImmediately();
+            }
         } catch (DbException e) {
             trace.error(e, "close");
         }
@@ -2227,15 +2228,17 @@ public final class Database implements DataHandler, CastDataProvider {
      * Immediately close the database.
      */
     public void shutdownImmediately() {
-        closing = true;
-        setPowerOffCount(1);
-        try {
-            checkPowerOff();
-        } catch (DbException e) {
-            // ignore
+        if (!closing) {
+            closing = true;
+            setPowerOffCount(1);
+            try {
+                checkPowerOff();
+            } catch (DbException e) {
+                // ignore
+            }
+            closeFiles();
+            powerOffCount = 0;
         }
-        closeFiles();
-        powerOffCount = 0;
     }
 
     @Override

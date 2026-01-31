@@ -44,6 +44,11 @@ public class Script extends Tool {
         new Script().runTool(args);
     }
 
+    /**
+     * Creates default instance
+     */
+    public Script() {}
+
     @Override
     public void runTool(String... args) throws SQLException {
         String url = null;

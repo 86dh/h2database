@@ -36,6 +36,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -169,6 +170,21 @@ public abstract class FileStore<C extends Chunk<C>>
      */
     protected volatile C lastChunk;
 
+    /**
+     * Chunks that was recently allocated and saved, but their metadata is not
+     * present in layout map yet. This can't happen before chunk is allocated,
+     * but preferably should be done right before next chunk is created.
+     * It has to be thread-safe, because producer and consumer are using different
+     * locks ({@link #saveChunkLock} and {@link #serializationLock} respectively).
+     */
+    private final Queue<C> recentlySaved = new LinkedBlockingQueue<>();
+
+    /**
+     * Identifier of the last created chunk.
+     * It is different from {@link #lastChunk.id}, because process is pipelined -
+     * chunk creation / serialization and space allocation / save are handled
+     * by two dedicated threads, therefore more than one chunk might be in that pipeline.
+     */
     private int lastChunkId;   // protected by serializationLock
 
     protected final ReentrantLock saveChunkLock = new ReentrantLock(true);
@@ -176,7 +192,7 @@ public abstract class FileStore<C extends Chunk<C>>
     /**
      * The map of chunks.
      */
-    final ConcurrentHashMap<Integer, C> chunks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, C> chunks = new ConcurrentHashMap<>();
 
     protected final HashMap<String, Object> storeHeader = new HashMap<>();
 
@@ -189,7 +205,7 @@ public abstract class FileStore<C extends Chunk<C>>
     private final Queue<WriteBuffer> writeBufferPool = new ArrayBlockingQueue<>(PIPE_LENGTH + 1);
 
     /**
-     * The layout map. Contains chunk's metadata and root locations for all maps.
+     * The layout map. Contains metadata for all chunks and root locations for all maps.
      * This is relatively fast changing part of metadata
      */
     private MVMap<String, String> layout;
@@ -274,13 +290,28 @@ public abstract class FileStore<C extends Chunk<C>>
         if (allowedCompactionTime > 0) {
             compactStore(allowedCompactionTime);
         }
+
+        serializationLock.lock();
+        try {
+            // if there are no outstanding changes in data maps,
+            // but some recently saved chunk(s), apart from the latest one,
+            // are not reflected in layout map yet,
+            // we need to force new chunk creation by modifying layout map here
+            saveRecentChunksInLayout(mvStore.getCurrentVersion());
+        } finally {
+            serializationLock.unlock();
+        }
+
+
         mvStore.commit();
         writeCleanShutdown();
         clearCaches();
     }
 
     public void close() {
-        layout.close();
+        if (layout != null) {
+            layout.close();
+        }
         closed = true;
         chunks.clear();
     }
@@ -491,6 +522,7 @@ public abstract class FileStore<C extends Chunk<C>>
                 saveChunkLock.lock();
                 try {
                     deadChunks.clear();
+                    recentlySaved.clear();
                     setLastChunk(keep);
                     adjustStoreToLastChunk();
                 } finally {
@@ -627,6 +659,7 @@ public abstract class FileStore<C extends Chunk<C>>
     }
 
     protected final void setLastChunk(C last) {
+        assert serializationLock.isHeldByCurrentThread();
         lastChunk = last;
         chunks.clear();
         lastChunkId = 0;
@@ -827,18 +860,7 @@ public abstract class FileStore<C extends Chunk<C>>
         assert serializationLock.isHeldByCurrentThread();
         // chunk's location has to be determined before
         // it's metadata can be is serialized
-        while (!chunk.isAllocated()) {
-            saveChunkLock.lock();
-            try {
-                if (chunk.isAllocated()) {
-                    break;
-                }
-            } finally {
-                saveChunkLock.unlock();
-            }
-            // just let chunks saving thread to deal with it
-            Thread.yield();
-        }
+        assert chunk.isAllocated();
         layout.put(Chunk.getMetaKey(chunk.id), chunk.asString());
     }
 
@@ -910,23 +932,29 @@ public abstract class FileStore<C extends Chunk<C>>
 
 
     public MVMap<String, String> start() {
-        if (size() == 0) {
-            initializeCommonHeaderAttributes(mvStore.getTimeAbsolute());
-            initializeStoreHeader(mvStore.getTimeAbsolute());
-        } else {
-            saveChunkLock.lock();
-            try {
-                readStoreHeader(recoveryMode);
-            } finally {
-                saveChunkLock.unlock();
+        // locking is not strictly neccessary here in startup flow, just to make assertions happy
+        serializationLock.lock();
+        try {
+            if (size() == 0) {
+                initializeCommonHeaderAttributes(mvStore.getTimeAbsolute());
+                initializeStoreHeader(mvStore.getTimeAbsolute());
+            } else {
+                saveChunkLock.lock();
+                try {
+                    readStoreHeader(recoveryMode);
+                } finally {
+                    saveChunkLock.unlock();
+                }
             }
+            lastCommitTime = getTimeSinceCreation();
+            mvStore.resetLastMapId(lastMapId());
+            mvStore.setCurrentVersion(lastChunkVersion());
+            MVMap<String, String> metaMap = mvStore.openMetaMap();
+            scrubLayoutMap(metaMap);
+            return metaMap;
+        } finally {
+            serializationLock.unlock();
         }
-        lastCommitTime = getTimeSinceCreation();
-        mvStore.resetLastMapId(lastMapId());
-        mvStore.setCurrentVersion(lastChunkVersion());
-        MVMap<String, String> metaMap = mvStore.openMetaMap();
-        scrubLayoutMap(metaMap);
-        return metaMap;
     }
 
     protected abstract void initializeStoreHeader(long time);
@@ -1372,52 +1400,39 @@ public abstract class FileStore<C extends Chunk<C>>
         }
     }
 
-    private int serializationExecutorHWM;
-
-
     final void storeIt(ArrayList<Page<?,?>> changed, long version, boolean syncWrite) throws ExecutionException {
         lastCommitTime = getTimeSinceCreation();
-        serializationExecutorHWM = submitOrRun(serializationExecutor,
+        submitOrRun(serializationExecutor,
                 () -> serializeAndStore(syncWrite, changed, lastCommitTime, version),
-                syncWrite, PIPE_LENGTH, serializationExecutorHWM);
+                syncWrite, PIPE_LENGTH);
     }
 
-    private static int submitOrRun(ThreadPoolExecutor executor, Runnable action,
-                                    boolean syncRun, int threshold, int hwm) throws ExecutionException {
+    public static void submitOrRun(ThreadPoolExecutor executor, Runnable action,
+                                    boolean syncRun, int threshold) throws ExecutionException {
         if (executor != null) {
             try {
                 Future<?> future = executor.submit(action);
-                int size = executor.getQueue().size();
-                if (size > hwm) {
-                    hwm = size;
-//                    System.err.println(executor + " HWM: " + hwm);
-                }
-                if (syncRun || size > threshold) {
+                if (syncRun || executor.getQueue().size() > threshold) {
                     try {
                         future.get();
                     } catch (InterruptedException ignore) {/**/}
                 }
-                return hwm;
+                return;
             } catch (RejectedExecutionException ex) {
-                assert executor.isShutdown();
                 Utils.shutdownExecutor(executor);
             }
         }
         action.run();
-        return hwm;
     }
 
-
-    private int bufferSaveExecutorHWM;
 
     private void serializeAndStore(boolean syncRun, ArrayList<Page<?,?>> changed, long time, long version) {
         serializationLock.lock();
         try {
-            C lastChunk = null;
             int chunkId = lastChunkId;
             if (chunkId != 0) {
                 chunkId &= Chunk.MAX_ID;
-                lastChunk = chunks.get(chunkId);
+                C lastChunk = chunks.get(chunkId);
                 assert lastChunk != null : lastChunkId + " ("+chunkId+") " + chunks;
                 // never go backward in time
                 time = Math.max(lastChunk.time, time);
@@ -1428,14 +1443,13 @@ public abstract class FileStore<C extends Chunk<C>>
                 c = createChunk(time, version);
                 chunks.put(c.id, c);
                 buff = getWriteBuffer();
-                serializeToBuffer(buff, changed, c, lastChunk);
+                serializeToBuffer(buff, changed, c);
             } catch (Throwable t) {
                 lastChunkId = chunkId;
                 throw t;
             }
 
-            bufferSaveExecutorHWM = submitOrRun(bufferSaveExecutor, () -> storeBuffer(c, buff),
-                    syncRun, 5, bufferSaveExecutorHWM);
+            submitOrRun(bufferSaveExecutor, () -> storeBuffer(c, buff), syncRun, 5);
 
             for (Page<?, ?> p : changed) {
                 p.releaseSavedPages();
@@ -1443,13 +1457,13 @@ public abstract class FileStore<C extends Chunk<C>>
         } catch (MVStoreException e) {
             mvStore.panic(e);
         } catch (Throwable e) {
-            mvStore.panic(DataUtils.newMVStoreException(DataUtils.ERROR_INTERNAL, "{0}", e.toString(), e));
+            mvStore.panic(e);
         } finally {
             serializationLock.unlock();
         }
     }
 
-    private void serializeToBuffer(WriteBuffer buff, ArrayList<Page<?, ?>> changed, C c, C previousChunk) {
+    private void serializeToBuffer(WriteBuffer buff, ArrayList<Page<?, ?>> changed, C c) {
         // need to patch the header later
         int headerLength = c.estimateHeaderSize();
         buff.position(headerLength);
@@ -1470,15 +1484,11 @@ public abstract class FileStore<C extends Chunk<C>>
 
         acceptChunkOccupancyChanges(c.time, version);
 
-        if (previousChunk != null) {
-            // the metadata of the last chunk was not stored in the layout map yet,
-            // just was embedded into the chunk itself, and this need to be done now
-            // (it's better not to update right after storing, because that
-            // would modify the meta map again)
-            if (!layout.containsKey(Chunk.getMetaKey(previousChunk.id))) {
-                saveChunkMetadataChanges(previousChunk);
-            }
-        }
+        // metadata of some recent chunks has not been saved in the layout map yet,
+        // just was embedded into the chunk itself, and this need to be done now
+        // (it's better not to update right after storing,
+        // because that would modify the layout map again)
+        saveRecentChunksInLayout(version);
 
         RootReference<String,String> layoutRootReference = layout.setWriteVersion(version);
         assert layoutRootReference != null;
@@ -1509,6 +1519,19 @@ public abstract class FileStore<C extends Chunk<C>>
         c.buffer = buff.getBuffer();
     }
 
+    private void saveRecentChunksInLayout(long currentVersion) {
+        C recentlySavedChunk;
+        while((recentlySavedChunk = recentlySaved.peek()) != null
+                    // if it's a leftover after store rollback
+                    && recentlySavedChunk.version < currentVersion) {
+            recentlySavedChunk = recentlySaved.poll();
+            recentlySavedChunk = chunks.get(recentlySavedChunk.id);
+            if (recentlySavedChunk != null) {
+                saveChunkMetadataChanges(recentlySavedChunk);
+            }
+        }
+    }
+
     private void storeBuffer(C c, WriteBuffer buff) {
         saveChunkLock.lock();
         try {
@@ -1519,6 +1542,7 @@ public abstract class FileStore<C extends Chunk<C>>
             int headerLength = (int)c.next;
 
             allocateChunkSpace(c, buff);
+            recentlySaved.offer(c);
 
             buff.position(0);
             c.writeChunkHeader(buff, headerLength);
@@ -1531,7 +1555,7 @@ public abstract class FileStore<C extends Chunk<C>>
         } catch (MVStoreException e) {
             mvStore.panic(e);
         } catch (Throwable e) {
-            mvStore.panic(DataUtils.newMVStoreException(DataUtils.ERROR_INTERNAL, "{0}", e.toString(), e));
+            mvStore.panic(e);
         } finally {
             saveChunkLock.unlock();
             c.buffer = null;
@@ -1549,6 +1573,7 @@ public abstract class FileStore<C extends Chunk<C>>
         assert serializationLock.isHeldByCurrentThread();
         if (hasPersistentData()) {
             Set<C> modifiedChunks = new HashSet<>();
+            List<RemovedPageInfo> unallocatedChunksRPI = new ArrayList<>();
             while (true) {
                 RemovedPageInfo rpi;
                 while ((rpi = removedPages.peek()) != null && rpi.version < version) {
@@ -1559,14 +1584,19 @@ public abstract class FileStore<C extends Chunk<C>>
                     C chunk = chunks.get(chunkId);
                     assert !mvStore.isOpen() || chunk != null : chunkId;
                     if (chunk != null) {
-                        modifiedChunks.add(chunk);
-                        if (chunk.accountForRemovedPage(rpi.getPageNo(), rpi.getPageLength(),
-                                rpi.isPinned(), time, rpi.version)) {
-                            registerDeadChunk(chunk);
+                        if (chunk.isAllocated()) {
+                            modifiedChunks.add(chunk);
+                            if (chunk.accountForRemovedPage(rpi.getPageNo(), rpi.getPageLength(),
+                                    rpi.isPinned(), time, rpi.version)) {
+                                registerDeadChunk(chunk);
+                            }
+                        } else {
+                            unallocatedChunksRPI.add(rpi);
                         }
                     }
                 }
                 if (modifiedChunks.isEmpty()) {
+                    unallocatedChunksRPI.forEach(removedPages::offer);
                     return;
                 }
                 for (C chunk : modifiedChunks) {
@@ -1844,10 +1874,10 @@ public abstract class FileStore<C extends Chunk<C>>
                 autoCompactLastFileOpCount = getWriteCount() + getReadCount() + 10;
             }
         } catch (InterruptedException ignore) {
+        } catch (MVStoreException e) {
+            mvStore.panic(e);
         } catch (Throwable e) {
-            if (!mvStore.handleException(e)) {
-                throw e;
-            }
+            mvStore.panic(e);
         }
     }
 
@@ -2237,7 +2267,7 @@ public abstract class FileStore<C extends Chunk<C>>
         private final int sleep;
 
         BackgroundWriterThread(FileStore<?> store, int sleep, String fileStoreName) {
-            super("MVStore background writer " + fileStoreName);
+            super(Utils.H2_THREAD_GROUP, "MVStore background writer " + fileStoreName);
             this.store = store;
             this.sleep = sleep;
             setDaemon(true);

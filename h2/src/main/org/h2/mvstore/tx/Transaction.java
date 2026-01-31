@@ -236,7 +236,8 @@ public final class Transaction {
                     break;
                 case STATUS_CLOSED:
                     valid = currentStatus == STATUS_COMMITTED ||
-                            currentStatus == STATUS_ROLLED_BACK;
+                            currentStatus == STATUS_ROLLED_BACK ||
+                            currentStatus == STATUS_CLOSED;
                     break;
                 case STATUS_OPEN:
                 default:
@@ -336,12 +337,12 @@ public final class Transaction {
             // The purpose of the following loop is to get a coherent picture
             // In order to get such a "snapshot", we wait for a moment of silence,
             // when no new transaction were committed / closed.
-            long[] committingTransactions;
+            VersionedBitSet committingTransactions;
             do {
                 committingTransactions = store.committingTransactions.get();
                 for (MVMap<Object,VersionedValue<Object>> map : maps) {
                     TransactionMap<?,?> txMap = openMapX(map);
-                    txMap.setStatementSnapshot(new Snapshot(map.flushAndGetRoot(), committingTransactions));
+                    txMap.setStatementSnapshot(new Snapshot(map.flushAndGetRoot(), committingTransactions.bits));
                 }
                 if (isReadCommitted()) {
                     undoLogRootReferences = store.collectUndoLogRootReferences();
@@ -394,7 +395,7 @@ public final class Transaction {
      *
      * @return key for the newly added undo log entry
      */
-    long log(Record<?,?> logRecord) {
+    <K,V> long log(int mapId, K key, VersionedValue<V> oldValue) {
         long currentState = statusAndLogId.getAndIncrement();
         long logId = getLogId(currentState);
         if (logId >= LOG_ID_LIMIT) {
@@ -405,7 +406,7 @@ public final class Transaction {
         }
         int currentStatus = getStatus(currentState);
         checkOpen(currentStatus);
-        long undoKey = store.addUndoLogRecord(transactionId, logId, logRecord);
+        long undoKey = store.addUndoLogRecord(transactionId, logId, new Record<>(mapId, key, oldValue));
         return undoKey;
     }
 
@@ -488,32 +489,39 @@ public final class Transaction {
      * Commit the transaction. Afterward, this transaction is closed.
      */
     public void commit() {
-        assert store.isTransactionOpen(transactionId);
-        markTransactionEnd();
+        assert !store.isTransactionClosed(transactionId);
         Throwable ex = null;
+        boolean wasActive = false;
         boolean hasChanges = false;
-        int previousStatus = STATUS_OPEN;
         try {
-            long state = setStatus(STATUS_COMMITTED);
-            hasChanges = hasChanges(state);
-            previousStatus = getStatus(state);
-            if (hasChanges) {
+            long lastState = setStatus(STATUS_COMMITTED);
+            hasChanges = hasChanges(lastState);
+            int previousStatus = getStatus(lastState);
+            wasActive = isActive(previousStatus);
+            if (wasActive && hasChanges) {
                 store.commit(this, previousStatus == STATUS_COMMITTED);
             }
+            markTransactionEnd();
         } catch (Throwable e) {
-            ex = e;
-            throw e;
+            if (wasActive) {
+                ex = e;
+                throw e;
+            }
         } finally {
-            if (isActive(previousStatus)) {
-                try {
-                    store.endTransaction(this, hasChanges);
-                } catch (Throwable e) {
-                    if (ex == null) {
-                        throw e;
-                    } else {
-                        ex.addSuppressed(e);
-                    }
-                }
+            if (wasActive) {
+                close(hasChanges, ex);
+            }
+        }
+    }
+
+    void close(boolean hasChanges, Throwable ex) {
+        try {
+            store.endTransaction(this, hasChanges);
+        } catch (Throwable e) {
+            if (ex == null) {
+                throw e;
+            } else {
+                ex.addSuppressed(e);
             }
         }
     }
@@ -553,31 +561,24 @@ public final class Transaction {
     public void rollback() {
         markTransactionEnd();
         Throwable ex = null;
-        int status = STATUS_OPEN;
+        boolean wasActive = false;
+        boolean hasChanges = false;
         try {
             long lastState = setStatus(STATUS_ROLLED_BACK);
-            status = getStatus(lastState);
+            wasActive = isActive(getStatus(lastState));
             long logId = getLogId(lastState);
             if (logId > 0) {
+                hasChanges = true;
                 store.rollbackTo(this, logId, 0);
             }
         } catch (Throwable e) {
-            status = getStatus();
-            if (isActive(status)) {
+            if (wasActive) {
                 ex = e;
                 throw e;
             }
         } finally {
-            try {
-                if (isActive(status)) {
-                    store.endTransaction(this, true);
-                }
-            } catch (Throwable e) {
-                if (ex == null) {
-                    throw e;
-                } else {
-                    ex.addSuppressed(e);
-                }
+            if (wasActive) {
+                close(hasChanges, ex);
             }
         }
     }
@@ -610,7 +611,7 @@ public final class Transaction {
         this.timeoutMillis = timeoutMillis > 0 ? timeoutMillis : store.timeoutMillis;
     }
 
-    private long getLogId() {
+    long getLogId() {
         return getLogId(statusAndLogId.get());
     }
 
@@ -641,13 +642,12 @@ public final class Transaction {
     void closeIt() {
         transactionMaps.clear();
         long lastState = setStatus(STATUS_CLOSED);
-        store.store.deregisterVersionUsage(txCounter);
-        if((hasChanges(lastState) || hasRollback(lastState))) {
-            notifyAllWaitingTransactions();
+        if (getStatus(lastState) != STATUS_CLOSED) {
+            store.store.deregisterVersionUsage(txCounter);
         }
     }
 
-    private void notifyAllWaitingTransactions() {
+    void notifyAllWaitingTransactions() {
         if (notificationRequested) {
             synchronized (this) {
                 notifyAll();
@@ -732,7 +732,7 @@ public final class Transaction {
         long state;
         int status;
         while ((status = getStatus(state = statusAndLogId.get())) != STATUS_CLOSED
-                && status != STATUS_ROLLED_BACK && !hasRollback(state)) {
+                && status != STATUS_COMMITTED && status != STATUS_ROLLED_BACK && !hasRollback(state)) {
             if (waiter.getStatus() != STATUS_OPEN) {
                 waiter.tryThrowDeadLockException(true);
             }

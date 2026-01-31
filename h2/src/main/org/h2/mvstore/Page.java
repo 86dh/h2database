@@ -151,7 +151,7 @@ public abstract class Page<K,V> implements Cloneable {
      * @param map the map
      * @return the new page
      */
-    static <K,V> Page<K,V> createEmptyLeaf(MVMap<K,V> map) {
+    public static <K,V> Page<K,V> createEmptyLeaf(MVMap<K,V> map) {
         return createLeaf(map, map.getKeyType().createStorage(0),
                 map.getValueType().createStorage(0), PAGE_LEAF_MEMORY);
     }
@@ -413,6 +413,8 @@ public abstract class Page<K,V> implements Cloneable {
         return res;
     }
 
+    abstract int calculateTraversalIndex(K key);
+
     /**
      * Split the page. This modifies the current page.
      *
@@ -460,6 +462,16 @@ public abstract class Page<K,V> implements Cloneable {
         System.arraycopy(keys, 0, newKeys, 0, keyCount);
         System.arraycopy(extraKeys, 0, newKeys, keyCount, extraKeyCount);
         keys = newKeys;
+    }
+
+    /**
+     * Create copy of this page with specified entries removed.
+     *
+     * @param positionsToRemove bit set of positions to remove
+     * @return modified copy of this page
+     */
+    public Page<K,V> remove(long positionsToRemove) {
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -999,6 +1011,15 @@ public abstract class Page<K,V> implements Cloneable {
     }
 
     /**
+     * Determine whether this page and page provided share the same set of keys.
+     * @param page to compare keys with
+     * @return true if keys are the same
+     */
+    final boolean sameKeys(Page<K, V> page) {
+        return keys == page.keys;
+    }
+
+    /**
      * Create an array of page references.
      *
      * @param <K> the key class
@@ -1169,6 +1190,15 @@ public abstract class Page<K,V> implements Cloneable {
         @Override
         public V getValue(int index) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        int calculateTraversalIndex(K key) {
+           int index = binarySearch(key);
+            if (++index < 0) {
+                index = -index;
+            }
+            return index;
         }
 
         @Override
@@ -1507,6 +1537,11 @@ public abstract class Page<K,V> implements Cloneable {
         }
 
         @Override
+        int calculateTraversalIndex(K key) {
+            return binarySearch(key);
+        }
+
+        @Override
         public Page<K,V> split(int at) {
             assert !isSaved();
             int b = getKeyCount() - at;
@@ -1538,6 +1573,27 @@ public abstract class Page<K,V> implements Cloneable {
             if(isPersistent()) {
                 recalculateMemory();
             }
+        }
+
+        @Override
+        public Page<K,V> remove(long positionsToRemove) {
+            assert positionsToRemove != 0;
+            int keyCount = getKeyCount() - Long.bitCount(positionsToRemove);
+            if (keyCount == 0) {
+                return map.createEmptyLeaf();
+            }
+            K[] newKeys = createKeyStorage(keyCount);
+            V[] newValues = values == null ? null : createValueStorage(keyCount);
+            for(int src = 0, dst = 0; dst < keyCount; ++src, positionsToRemove >>>= 1) {
+                if ((positionsToRemove & 1L) == 0) {
+                    newKeys[dst] = getKey(src);
+                    if (newValues != null) {
+                        newValues[dst] = values[src];
+                    }
+                    ++dst;
+                }
+            }
+            return createLeaf(map, newKeys, newValues, 0);
         }
 
         @Override
@@ -1634,7 +1690,7 @@ public abstract class Page<K,V> implements Cloneable {
         protected void readPayLoad(ByteBuffer buff) {
             int keyCount = getKeyCount();
             values = createValueStorage(keyCount);
-            map.getValueType().read(buff, values, getKeyCount());
+            map.getValueType().read(buff, values, keyCount);
         }
 
         @Override

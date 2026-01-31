@@ -67,6 +67,11 @@ public class ChangeFileEncryption extends Tool {
         }
     }
 
+    /**
+     * Creates default instance
+     */
+    public ChangeFileEncryption() {}
+
     @Override
     public void runTool(String... args) throws SQLException {
         String dir = ".";

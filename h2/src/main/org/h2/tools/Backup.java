@@ -56,6 +56,11 @@ public class Backup extends Tool {
         new Backup().runTool(args);
     }
 
+    /**
+     * Creates default instance
+     */
+    public Backup() {}
+
     @Override
     public void runTool(String... args) throws SQLException {
         String zipFileName = "backup.zip";

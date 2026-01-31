@@ -12,6 +12,9 @@ import org.h2.mvstore.MVMap.Decision;
 import org.h2.mvstore.type.DataType;
 import org.h2.value.VersionedValue;
 
+import static org.h2.value.VersionedValue.NO_ENTRY_ID;
+import static org.h2.value.VersionedValue.NO_OPERATION_ID;
+
 /**
  * Class TxDecisionMaker is a base implementation of MVMap.DecisionMaker
  * to be used for TransactionMap modification.
@@ -42,7 +45,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
     /**
      * Id for the undo log entry created for this modification
      */
-    private       long           undoKey;
+    private       long           undoKey = NO_ENTRY_ID;
 
     /**
      * Id of the last operation, we decided to
@@ -74,7 +77,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
         // if map does not have that entry yet
         if (existingValue == null ||
                 // or entry is a committed one
-                (id = existingValue.getOperationId()) == 0 ||
+                (id = existingValue.getOperationId()) == NO_OPERATION_ID ||
                 // or it came from the same transaction
                 isThisTransaction(blockingId = TransactionStore.getTransactionId(id))) {
             logAndDecideToPut(existingValue, existingValue == null ? null : existingValue.getCommittedValue());
@@ -115,11 +118,12 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
     @Override
     public final void reset() {
         if (decision != MVMap.Decision.REPEAT) {
-            lastOperationId = 0;
+            lastOperationId = NO_OPERATION_ID;
             if (decision == MVMap.Decision.PUT) {
                 // positive decision has been made already and undo record created,
                 // but map was updated afterward and undo record deletion required
                 transaction.logUndo();
+                undoKey = NO_ENTRY_ID;
             }
         }
         blockingTransaction = null;
@@ -131,7 +135,8 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
     @Override
     // always return value (ignores existingValue)
     public <T extends VersionedValue<V>> T selectValue(T existingValue, T providedValue) {
-        return (T) VersionedValueUncommitted.getInstance(undoKey, getNewValue(existingValue), lastValue);
+        return (T) VersionedValueUncommitted.getInstance(undoKey, getNewValue(existingValue), lastValue,
+                                                            TransactionStore.getEntryId(existingValue, undoKey));
     }
 
     /**
@@ -155,7 +160,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
      * @return {@link org.h2.mvstore.MVMap.Decision#PUT}
      */
     MVMap.Decision logAndDecideToPut(VersionedValue<V> valueToLog, V lastValue) {
-        undoKey = transaction.log(new Record<>(mapId, key, valueToLog));
+        undoKey = transaction.log(mapId, key, valueToLog);
         this.lastValue = lastValue;
         return setDecision(MVMap.Decision.PUT);
     }
@@ -186,7 +191,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
      * (transaction we are acting within).
      *
      * @param transactionId to check
-     * @return true it it is "current" transaction's id, false otherwise
+     * @return true it is "current" transaction's id, false otherwise
      */
     final boolean isThisTransaction(int transactionId) {
         return transactionId == transaction.transactionId;
@@ -206,7 +211,7 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
         TransactionStore store = transaction.store;
         do {
             blockingTx = store.getTransaction(transactionId);
-            result = BitSetHelper.get(store.committingTransactions.get(), transactionId);
+            result = store.committingTransactions.get().get(transactionId);
         } while (blockingTx != store.getTransaction(transactionId));
 
         if (!result) {
@@ -273,13 +278,13 @@ class TxDecisionMaker<K,V> extends MVMap.DecisionMaker<VersionedValue<V>> {
                 return logAndDecideToPut(null, null);
             } else {
                 long id = existingValue.getOperationId();
-                if (id == 0 // entry is a committed one
-                            // or it came from the same transaction
+                if (id == NO_OPERATION_ID   // entry is a committed one,
+                        // or it came from the same transaction
                         || isThisTransaction(blockingId = TransactionStore.getTransactionId(id))) {
                     if(existingValue.getCurrentValue() != null) {
                         return decideToAbort(existingValue.getCurrentValue());
                     }
-                    if (id == 0) {
+                    if (id == NO_OPERATION_ID) {
                         V snapshotValue = getValueInSnapshot();
                         if (snapshotValue != null) {
                             return decideToAbort(snapshotValue);

@@ -8,6 +8,8 @@ package org.h2.mvstore.tx;
 import org.h2.mvstore.MVMap;
 import org.h2.value.VersionedValue;
 
+import static org.h2.value.VersionedValue.NO_OPERATION_ID;
+
 /**
  * Class RollbackDecisionMaker process undo log record during transaction rollback.
  *
@@ -40,7 +42,7 @@ final class RollbackDecisionMaker extends MVMap.DecisionMaker<Record<?,?>> {
             VersionedValue<Object> valueToRestore = existingValue.oldValue;
             long operationId;
             if (valueToRestore == null ||
-                    (operationId = valueToRestore.getOperationId()) == 0 ||
+                    (operationId = valueToRestore.getOperationId()) == NO_OPERATION_ID ||
                     TransactionStore.getTransactionId(operationId) == transactionId
                             && TransactionStore.getLogId(operationId) < toLogId) {
                 int mapId = existingValue.mapId;
@@ -48,7 +50,7 @@ final class RollbackDecisionMaker extends MVMap.DecisionMaker<Record<?,?>> {
                 if (map != null && !map.isClosed()) {
                     Object key = existingValue.key;
                     VersionedValue<Object> previousValue = map.operate(key, valueToRestore,
-                            MVMap.DecisionMaker.DEFAULT);
+                            MVMap.DecisionMaker.defaultDecision());
                     listener.onRollback(map, key, previousValue, valueToRestore);
                 }
             }

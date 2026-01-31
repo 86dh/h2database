@@ -21,9 +21,6 @@ import org.h2.value.VersionedValue;
  */
 final class Record<K,V> {
 
-    // -1 is a bogus map id
-    static final Record<?,?> COMMIT_MARKER = new Record<>(-1, null, null);
-
     /**
      * Map id for this change is related to
      */
@@ -39,6 +36,10 @@ final class Record<K,V> {
      * It is null if entry did not exist before the change (addition).
      */
     final VersionedValue<V> oldValue;
+
+    Record(int commitOrder) {
+        this(commitOrder, null, null);
+    }
 
     Record(int mapId, K key, VersionedValue<V> oldValue) {
         this.mapId = mapId;
@@ -93,12 +94,11 @@ final class Record<K,V> {
             }
         }
 
-        @SuppressWarnings("unchecked")
         @Override
         public Record<K,V> read(ByteBuffer buff) {
             int mapId = DataUtils.readVarInt(buff);
             if (mapId < 0) {
-                return (Record<K,V>)COMMIT_MARKER;
+                return new Record<>(mapId);
             }
             MVMap<K, VersionedValue<V>> map = transactionStore.getMap(mapId);
             K key = map.getKeyType().read(buff);

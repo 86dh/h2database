@@ -163,10 +163,10 @@ public final class Cursor<K,V> implements Iterator<K> {
      * @param reverse true if traversal is in reverse direction, false otherwise
      * @return CursorPos representing path from the entry found,
      *         or from insertion point if not,
-     *         all the way up to to the root page provided
+     *         all the way up to the root page provided
      */
     static <K,V> CursorPos<K,V> traverseDown(Page<K,V> page, K key, boolean reverse) {
-        CursorPos<K,V> cursorPos = key != null ? CursorPos.traverseDown(page, key) :
+        CursorPos<K,V> cursorPos = key != null ? CursorPos.traverseDown(page, key, null) :
                 reverse ? page.getAppendCursorPos(null) : page.getPrependCursorPos(null);
         int index = cursorPos.index;
         if (index < 0) {

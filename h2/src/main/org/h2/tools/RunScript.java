@@ -67,6 +67,11 @@ public class RunScript extends Tool {
     }
 
     /**
+     * Creates default instance
+     */
+    public RunScript() {}
+
+    /**
      * Executes the contents of a SQL script file against a database.
      * This tool is usually used to create a database from script.
      * It can also be used to analyze performance problems by running

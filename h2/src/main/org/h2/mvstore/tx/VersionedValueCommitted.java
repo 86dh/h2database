@@ -12,14 +12,21 @@ import org.h2.value.VersionedValue;
  *
  * @author <a href='mailto:andrei.tokar@gmail.com'>Andrei Tokar</a>
  */
-class VersionedValueCommitted<T> extends VersionedValue<T> {
+class VersionedValueCommitted<T> extends VersionedValue<T>
+{
     /**
      * The current value.
      */
     public final T value;
 
-    VersionedValueCommitted(T value) {
+    /**
+     * Transaction-scoped id for the entry, this value belongs to
+     */
+    private final long entryId;
+
+    protected VersionedValueCommitted(T value, long entryId) {
         this.value = value;
+        this.entryId = entryId;
     }
 
     /**
@@ -30,14 +37,25 @@ class VersionedValueCommitted<T> extends VersionedValue<T> {
      * @param value the object to cast/wrap
      * @return VersionedValue instance
      */
-    @SuppressWarnings("unchecked")
     static <X> VersionedValue<X> getInstance(X value) {
         assert value != null;
-        return value instanceof VersionedValue ? (VersionedValue<X>)value : new VersionedValueCommitted<>(value);
+        return getInstance(value, NO_ENTRY_ID);
+    }
+
+    @SuppressWarnings("unchecked")
+    static <X> VersionedValue<X> getInstance(X value, long entryId) {
+        return entryId == NO_ENTRY_ID && (value == null || value instanceof VersionedValue) ?
+                (VersionedValue<X>)value :
+                new VersionedValueCommitted<>(value, entryId);
     }
 
     @Override
-    public T getCurrentValue() {
+    public long getEntryId() {
+        return entryId;
+    }
+
+    @Override
+    public final T getCurrentValue() {
         return value;
     }
 

@@ -6,11 +6,12 @@
 package org.h2.mvstore.tx;
 
 import java.util.ArrayList;
-import java.util.BitSet;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import org.h2.engine.IsolationLevel;
@@ -27,12 +28,22 @@ import org.h2.mvstore.type.MetaType;
 import org.h2.mvstore.type.ObjectDataType;
 import org.h2.mvstore.type.StringDataType;
 import org.h2.util.StringUtils;
+import org.h2.util.Utils;
 import org.h2.value.VersionedValue;
+
+import static org.h2.value.VersionedValue.NO_ENTRY_ID;
+import static org.h2.value.VersionedValue.NO_OPERATION_ID;
 
 /**
  * A store that supports concurrent MVCC read-committed transactions.
  */
-public class TransactionStore {
+public class TransactionStore implements AutoCloseable
+{
+    private static final int OPEN = 0;
+    private static final int INITIALIZING = 1;
+    private static final int READY = 2;
+    private static final int CLOSING = 3;
+    private static final int CLOSED = 4;
 
     /**
      * The store.
@@ -63,7 +74,7 @@ public class TransactionStore {
      * Key: opId, value: [ mapId, key, oldValue ].
      */
     @SuppressWarnings("unchecked")
-    private final MVMap<Long,Record<?,?>>[] undoLogs = new MVMap[MAX_OPEN_TRANSACTIONS];
+    private final MVMap<Long,Record<?,?>>[] undoLogs = new MVMap[MAX_OPEN_TRANSACTIONS+1];
     private final MVMap.Builder<Long, Record<?,?>> undoLogBuilder;
 
     private final DataType<?> dataType;
@@ -82,9 +93,9 @@ public class TransactionStore {
      * and undo record are still around.
      * Nevertheless, all of those should be considered by other transactions as committed.
      */
-    final AtomicReference<long[]> committingTransactions = new AtomicReference<>(new long[0]);
+    final AtomicReference<VersionedBitSet> committingTransactions = new AtomicReference<>(new VersionedBitSet());
 
-    private boolean init;
+    private final AtomicInteger state = new AtomicInteger(OPEN);
 
     /**
      * Soft limit on the number of concurrently opened transactions.
@@ -115,8 +126,7 @@ public class TransactionStore {
     /**
      * Hard limit on the number of concurrently opened transactions
      */
-    // TODO: introduce constructor parameter instead of a static field, driven by URL parameter
-    private static final int MAX_OPEN_TRANSACTIONS = 65535;
+    private static final int MAX_OPEN_TRANSACTIONS = Utils.getProperty("h2.maxOpenTransactions", 255);
 
     /**
      * Generate a string used to name undo log map for a specific transaction.
@@ -191,7 +201,8 @@ public class TransactionStore {
      * @param listener to notify about transaction rollback
      */
     public void init(RollbackListener listener) {
-        if (!init) {
+        if (state.compareAndSet(OPEN, INITIALIZING)) {
+            List<Transaction> leftoverTransactions = new ArrayList<>();
             for (String mapName : store.getMapNames()) {
                 if (mapName.startsWith(UNDO_LOG_NAME_PREFIX)) {
                     // Unexpectedly short name may be encountered upon upgrade from older version
@@ -203,7 +214,7 @@ public class TransactionStore {
                         if (store.hasData(mapName)) {
                             int transactionId = StringUtils.parseUInt31(mapName, UNDO_LOG_NAME_PREFIX.length() + 1,
                                     mapName.length());
-                            if (!isTransactionOpen(transactionId)) {
+                            if (isTransactionClosed(transactionId)) {
                                 Object[] data = preparedTransactions.get(transactionId);
                                 int status;
                                 String name;
@@ -214,28 +225,41 @@ public class TransactionStore {
                                     status = (Integer) data[0];
                                     name = (String) data[1];
                                 }
-                                MVMap<Long, Record<?,?>> undoLog = store.openMap(mapName, undoLogBuilder);
-                                undoLogs[transactionId] = undoLog;
-                                Long lastUndoKey = undoLog.lastKey();
-                                assert lastUndoKey != null;
-                                assert getTransactionId(lastUndoKey) == transactionId;
-                                long logId = getLogId(lastUndoKey) + 1;
-                                if (committed) {
-                                    // give it a proper name and used marker record instead
-                                    store.renameMap(undoLog, getUndoLogName(transactionId));
-                                    markUndoLogAsCommitted(transactionId);
-                                } else {
-                                    committed = logId > LOG_ID_MASK;
+                                try {
+                                    MVMap<Long, Record<?,?>> undoLog = store.openMap(mapName, undoLogBuilder);
+                                    undoLogs[transactionId] = undoLog;
+                                    Long lastUndoKey = undoLog.lastKey();
+                                    assert lastUndoKey != null;
+                                    assert getTransactionId(lastUndoKey) == transactionId;
+                                    long logId = getLogId(lastUndoKey) + 1;
+                                    int commitOrder = 1;
+                                    if (committed) {
+                                        // give it a proper name and use a marker record instead
+                                        store.renameMap(undoLog, getUndoLogName(transactionId));
+                                        markUndoLogAsCommitted(transactionId, -commitOrder);
+                                    } else {
+                                        committed = logId > LOG_ID_MASK;
+                                    }
+
+                                    if (committed) {
+                                        status = Transaction.STATUS_COMMITTED;
+                                        Record<?, ?> record = undoLog.get(lastUndoKey);
+                                        assert record != null;
+                                        assert record.mapId < 0;
+                                        commitOrder = -record.mapId;
+                                        lastUndoKey = undoLog.lowerKey(lastUndoKey);
+                                        assert lastUndoKey == null || getTransactionId(lastUndoKey) == transactionId;
+                                        logId = lastUndoKey == null ? 0 : getLogId(lastUndoKey) + 1;
+                                    }
+                                    Transaction transaction = new Transaction(null, transactionId, commitOrder,
+                                                                                status, name, logId, 1, 0, null, null);
+                                    leftoverTransactions.add(transaction);
+                                    continue;
+                                } catch (Throwable ignore) {
+                                    /* Exception like NPE or Assertion are possible here after some chunk loss
+                                     after unclean shutdown, i.e. when undo log may have references to already
+                                     removed map */
                                 }
-                                if (committed) {
-                                    status = Transaction.STATUS_COMMITTED;
-                                    lastUndoKey = undoLog.lowerKey(lastUndoKey);
-                                    assert lastUndoKey == null || getTransactionId(lastUndoKey) == transactionId;
-                                    logId = lastUndoKey == null ? 0 : getLogId(lastUndoKey) + 1;
-                                }
-                                registerTransaction(transactionId, status, name, logId, timeoutMillis, 0,
-                                        IsolationLevel.READ_COMMITTED, listener);
-                                continue;
                             }
                         }
                     }
@@ -245,16 +269,29 @@ public class TransactionStore {
                     }
                 }
             }
-            init = true;
+            leftoverTransactions.sort(Comparator.comparingLong(Transaction::getSequenceNum));
+            for (Transaction tx : leftoverTransactions) {
+                registerTransaction(tx.getId(), tx.getStatus(), tx.getName(), tx.getLogId(), timeoutMillis, 0,
+                        IsolationLevel.READ_COMMITTED, listener);
+            }
+            state.set(READY);
         }
     }
 
-    boolean isTransactionOpen(int transactionId) {
-        return openTransactions.get().get(transactionId);
+    /**
+     * Checks if transaction is completely closed - status set to CLOSED,
+     * corresponding bit in open & commiting bit sets cleared,
+     * transaction slot emptied.
+     * That also means that all uncommitted entries from this transaction, has been re-written as commited.
+     * @param transactionId to check
+     * @return true if transaction is completely closed, false otherwise
+     */
+    public boolean isTransactionClosed(int transactionId) {
+        return !openTransactions.get().get(transactionId);
     }
 
-    private void markUndoLogAsCommitted(int transactionId) {
-        addUndoLogRecord(transactionId, LOG_ID_MASK, Record.COMMIT_MARKER);
+    private void markUndoLogAsCommitted(int transactionId, long commitOrder) {
+        addUndoLogRecord(transactionId, LOG_ID_MASK, new Record<>(-(int)commitOrder));
     }
 
     /**
@@ -264,6 +301,7 @@ public class TransactionStore {
     public void endLeftoverTransactions() {
         List<Transaction> list = getOpenTransactions();
         for (Transaction t : list) {
+            assert !committingTransactions.get().get(t.transactionId);
             int status = t.getStatus();
             if (status == Transaction.STATUS_COMMITTED) {
                 t.commit();
@@ -339,25 +377,60 @@ public class TransactionStore {
     }
 
     /**
+     * Determine entry id from provided value, if available, or take initial value from provided undoKey.
+     *
+     * @param versionedValue to extract entry id from
+     * @param undoKey for entry to be identified
+     * @return entry id, which is a transaction log id for the first update to a map entry within transaction
+     */
+    static long getEntryId(VersionedValue<?> versionedValue, long undoKey) {
+        long entryId = NO_ENTRY_ID;
+        if (versionedValue != null) {
+            long operationId = versionedValue.getOperationId();
+            if (operationId != NO_OPERATION_ID && getTransactionId(operationId) == getTransactionId(undoKey)) {
+                entryId = versionedValue.getEntryId();
+            }
+        }
+        if (entryId == NO_ENTRY_ID) {
+            long logId = getLogId(undoKey);
+            assert logId != NO_ENTRY_ID;
+            entryId = logId;
+        }
+        return entryId;
+    }
+
+    /**
      * Get the list of unclosed transactions that have pending writes.
      *
      * @return the list of transactions (sorted by id)
      */
     public List<Transaction> getOpenTransactions() {
-        if(!init) {
+        if(state.get() == OPEN) {
             init();
         }
         ArrayList<Transaction> list = new ArrayList<>();
         int transactionId = 0;
-        VersionedBitSet bitSet = openTransactions.get();
-        while((transactionId = bitSet.nextSetBit(transactionId + 1)) > 0) {
-            Transaction transaction = getTransaction(transactionId);
-            if(transaction != null) {
-                if(transaction.getStatus() != Transaction.STATUS_CLOSED) {
-                    list.add(transaction);
+
+        VersionedBitSet lastCommittingTx;
+        VersionedBitSet latestCommittingTx = committingTransactions.get();
+        VersionedBitSet latestOpenTx;
+        do {
+            lastCommittingTx = latestCommittingTx;
+            latestOpenTx = openTransactions.get();
+            latestCommittingTx = committingTransactions.get();
+        } while (lastCommittingTx != latestCommittingTx);
+
+        while((transactionId = latestOpenTx.nextSetBit(transactionId + 1)) > 0) {
+            if (!lastCommittingTx.get(transactionId)) {
+                Transaction transaction = getTransaction(transactionId);
+                if(transaction != null) {
+                    if(transaction.getStatus() != Transaction.STATUS_CLOSED) {
+                        list.add(transaction);
+                    }
                 }
             }
         }
+        list.sort(Comparator.comparingLong(Transaction::getSequenceNum));
         return list;
     }
 
@@ -365,7 +438,17 @@ public class TransactionStore {
      * Close the transaction store.
      */
     public synchronized void close() {
-        store.commit();
+        int storeState;
+        while ((storeState = state.get()) <= READY) {
+            if (state.compareAndSet(storeState, CLOSING)) {
+                store.commit();
+                state.set(CLOSED);
+            }
+        }
+    }
+
+    public void closeImmediately() {
+        state.set(CLOSED);
     }
 
     /**
@@ -417,6 +500,8 @@ public class TransactionStore {
             sequenceNo = clone.getVersion();
             success = openTransactions.compareAndSet(original, clone);
         } while(!success);
+
+        assert !committingTransactions.get().get(transactionId);
 
         Transaction transaction = new Transaction(this, transactionId, sequenceNo, status, name, logId,
                 timeoutMillis, ownerId, isolationLevel, listener);
@@ -494,38 +579,49 @@ public class TransactionStore {
     void commit(Transaction t, boolean recovery) {
         if (!store.isClosed()) {
             int transactionId = t.transactionId;
-            // First, mark log as "committed".
-            // It does not change the way this transaction is treated by others,
-            // but preserves fact of commit in case of abrupt termination.
-            MVMap<Long,Record<?,?>> undoLog = undoLogs[transactionId];
-            Cursor<Long,Record<?,?>> cursor;
-            if(recovery) {
-                removeUndoLogRecord(transactionId);
-                cursor = undoLog.cursor(null);
-            } else {
-                cursor = undoLog.cursor(null);
-                markUndoLogAsCommitted(transactionId);
-            }
 
             // this is an atomic action that causes all changes
             // made by this transaction, to be considered as "committed"
-            flipCommittingTransactionsBit(transactionId, true);
+            VersionedBitSet commitingTx = flipCommittingTransactionsBit(transactionId, true);
 
-            CommitDecisionMaker<Object> commitDecisionMaker = new CommitDecisionMaker<>();
+            t.notifyAllWaitingTransactions();
+
+            t.markStatementStart(null);
+
+            // Now mark log as "committed".
+            // It does not change the way this transaction is treated by others,
+            // but preserves fact of commit in case of abrupt termination.
+            MVMap<Long,Record<?,?>> undoLog = undoLogs[transactionId];
+            if (!recovery) {
+                markUndoLogAsCommitted(transactionId, commitingTx.getVersion());
+            }
+
+            Cursor<Long,Record<?,?>> cursor = undoLog.cursor(null);
+
+            CommitDecisionMaker<Object> commitDecisionMaker = new CommitDecisionMaker<>(t, store.getKeysPerPage());
+
             try {
                 while (cursor.hasNext()) {
-                    Long undoKey = cursor.next();
-                    Record<?,?> op = cursor.getValue();
-                    int mapId = op.mapId;
-                    MVMap<Object, VersionedValue<Object>> map = openMap(mapId);
-                    if (map != null && !map.isClosed()) { // might be null if map was removed later
-                        Object key = op.key;
-                        commitDecisionMaker.setUndoKey(undoKey);
-                        // second parameter (value) is not really
-                        // used by CommitDecisionMaker
-                        map.operate(key, null, commitDecisionMaker);
+                    long undoKey = cursor.next();
+                    Record<?, ?> record = cursor.getValue();
+                    int mapId = record.mapId;
+                    if (mapId < 0) {
+                        continue;
+                    }
+                    long entryId = getEntryId(record.oldValue, undoKey);
+
+                    if (!commitDecisionMaker.haveSeenEntry((int) entryId)) {
+                        MVMap<Object, VersionedValue<Object>> map = openMap(mapId);
+                        if (map != null && !map.isClosed()) { // might be null if map was removed later
+                            Object key = record.key;
+                            commitDecisionMaker.setUndoKey(undoKey);
+                            // second parameter (value) is not really
+                            // used by CommitDecisionMaker
+                            map.operate(key, null, commitDecisionMaker);
+                        }
                     }
                 }
+                t.markStatementEnd();
             } finally {
                 try {
                     undoLog.clear();
@@ -536,15 +632,17 @@ public class TransactionStore {
         }
     }
 
-    private void flipCommittingTransactionsBit(int transactionId, boolean flag) {
+    private VersionedBitSet flipCommittingTransactionsBit(int transactionId, boolean flag) {
+        VersionedBitSet result;
         boolean success;
         do {
-            long[] original = committingTransactions.get();
-            assert BitSetHelper.get(original, transactionId) != flag :
+            VersionedBitSet original = committingTransactions.get();
+            assert original.get(transactionId) != flag :
                     flag ? "Double commit" : "Mysterious bit's disappearance";
-            long[] clone = BitSetHelper.flip(original, transactionId);
-            success = committingTransactions.compareAndSet(original, clone);
+            result = new VersionedBitSet(original, transactionId);
+            success = committingTransactions.compareAndSet(original, result);
         } while(!success);
+        return result;
     }
 
     <K,V> MVMap<K, VersionedValue<V>> openVersionedMap(String name, DataType<K> keyType, DataType<V> valueType) {
@@ -592,11 +690,15 @@ public class TransactionStore {
 
     <K,V> MVMap<K,VersionedValue<V>> getMap(int mapId) {
         MVMap<K, VersionedValue<V>> map = store.getMap(mapId);
-        if (map == null && !init) {
-            map = openMap(mapId);
+        if (map == null) {
+            int storeState = state.get();
+            boolean initialized = storeState >= READY;
+            if (!initialized) {
+                map = openMap(mapId);
+            }
+            assert map != null : "map with id " + mapId + " is missing" +
+                    (initialized ? "" : " during initialization");
         }
-        assert map != null : "map with id " + mapId + " is missing" +
-                                (init ? "" : " during initialization");
         return map;
     }
 
@@ -611,6 +713,7 @@ public class TransactionStore {
      *                   false if it just performed a data access
      */
     void endTransaction(Transaction t, boolean hasChanges) {
+        assert !committingTransactions.get().get(t.transactionId);
         t.closeIt();
         int txId = t.transactionId;
         transactions.set(txId, null);

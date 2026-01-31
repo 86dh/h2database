@@ -146,7 +146,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
     @Override
     public V put(K key, V value) {
         DataUtils.checkArgument(value != null, "The value may not be null");
-        return operate(key, value, DecisionMaker.PUT);
+        return operate(key, value, DecisionMaker.putDecision());
     }
 
     /**
@@ -514,7 +514,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
     @Override
     @SuppressWarnings("unchecked")
     public V remove(Object key) {
-        return operate((K)key, null, DecisionMaker.REMOVE);
+        return operate((K)key, null, DecisionMaker.removeDecision());
     }
 
     /**
@@ -526,7 +526,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      */
     @Override
     public final V putIfAbsent(K key, V value) {
-        return operate(key, value, DecisionMaker.IF_ABSENT);
+        return operate(key, value, DecisionMaker.ifAbsentDecision());
     }
 
     /**
@@ -585,7 +585,7 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      */
     @Override
     public final V replace(K key, V value) {
-        return operate(key, value, DecisionMaker.IF_PRESENT);
+        return operate(key, value, DecisionMaker.ifPresentDecision());
     }
 
     /**
@@ -944,7 +944,6 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
     protected final void beforeWrite() {
         assert !getRoot().isLockedByCurrentThread() : getRoot();
         if (closed) {
-            int id = getId();
             String mapName = store.getMapName(id);
             throw DataUtils.newMVStoreException(
                     DataUtils.ERROR_CLOSED, "Map {0}({1}) is closed. {2}", mapName, id, store.getPanicException());
@@ -1601,11 +1600,9 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      *
      * @param <V> value type of the map
      */
-    public abstract static class DecisionMaker<V> {
-        /**
-         * Decision maker for transaction rollback.
-         */
-        public static final DecisionMaker<Object> DEFAULT = new DecisionMaker<>() {
+    public abstract static class DecisionMaker<V>
+    {
+        private static final DecisionMaker<Object> DEFAULT = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return providedValue == null ? Decision.REMOVE : Decision.PUT;
@@ -1618,9 +1615,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for put().
+         * Decision maker for transaction rollback.
          */
-        public static final DecisionMaker<Object> PUT = new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> defaultDecision() {
+            return (DecisionMaker<V>) DEFAULT;
+        }
+
+        private static final DecisionMaker<Object> PUT = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return Decision.PUT;
@@ -1633,9 +1635,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for remove().
+         * Decision maker for put().
          */
-        public static final DecisionMaker<Object> REMOVE = new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> putDecision() {
+            return (DecisionMaker<V>) PUT;
+        }
+
+        private static final DecisionMaker<Object> REMOVE = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return Decision.REMOVE;
@@ -1648,9 +1655,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for putIfAbsent() key/value.
+         * Decision maker for remove().
          */
-        static final DecisionMaker<Object> IF_ABSENT = new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> removeDecision() {
+            return (DecisionMaker<V>) REMOVE;
+        }
+
+        private static final DecisionMaker<Object> IF_ABSENT = new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return existingValue == null ? Decision.PUT : Decision.ABORT;
@@ -1663,9 +1675,14 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Decision maker for replace().
+         * Decision maker for putIfAbsent() key/value.
          */
-        static final DecisionMaker<Object> IF_PRESENT= new DecisionMaker<>() {
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> ifAbsentDecision() {
+            return (DecisionMaker<V>) IF_ABSENT;
+        }
+
+        private static final DecisionMaker<Object> IF_PRESENT= new DecisionMaker<>() {
             @Override
             public Decision decide(Object existingValue, Object providedValue) {
                 return existingValue != null ? Decision.PUT : Decision.ABORT;
@@ -1678,7 +1695,125 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         };
 
         /**
-         * Makes a decision about how to proceed with the update.
+         * Decision maker for replace().
+         */
+        @SuppressWarnings("unchecked")
+        public static <V> DecisionMaker<V> ifPresentDecision() {
+            return (DecisionMaker<V>) IF_PRESENT;
+        }
+
+        /**
+         * Makes a page-level decision about how to proceed with the operation.
+         * This default implementation delegates decision to entry-level call
+         * {@link #decide(Object, Object, CursorPos)}
+         *
+         * @param tip path from the leaf page, which is targeted by this operation -
+         *            contains specified key or holds it's position
+         * @param key for the operation
+         * @param providedValue value for the operation
+         * @return up to three attributes, which are contained within CursorPos object.
+         *         Possible values are:
+         *         <UL>
+         *          <LI>null, if operation should be re-tried;</LI>
+         *          <LI>original tip, if operation should be aborted withou any changes;</LI>
+         *          <LI>path from an updated page to tree root, where index attribute (irrelevant in this context)
+         *              is reused as memory size adjustment for an updated page;</LI>
+         *         </UL>
+         * @param <K> type of the key
+         */
+        public <K> CursorPos<K,V> decide(CursorPos<K,V> tip, K key, V providedValue) {
+            Page<K,V> p = tip.page;
+            assert p.isLeaf();
+            int index = tip.index;
+            V result = index < 0 ? null : p.getValue(index);
+            Decision decision = decide(result, providedValue, tip);
+            CursorPos<K,V> pos = tip.parent;
+            MVMap<K, V> map = p.map;
+
+            switch (decision) {
+                case REMOVE: {
+                    if (index < 0) {
+                        return tip;
+                    }
+                    if (p.getTotalCount() == 1 && pos != null) {
+                        int keyCount;
+                        do {
+                            p = pos.page;
+                            index = pos.index;
+                            pos = pos.parent;
+                            keyCount = p.getKeyCount();
+                            // condition below should always be false, but older
+                            // versions (up to 1.4.197) may create
+                            // single-childed (with no keys) internal nodes,
+                            // which we skip here
+                        } while (keyCount == 0 && pos != null);
+
+                        if (keyCount <= 1) {
+                            if (keyCount == 1) {
+                                assert index <= 1;
+                                p = p.getChildPage(1 - index);
+                            } else {
+                                // if root happens to be such single-childed
+                                // (with no keys) internal node, then just
+                                // replace it with empty leaf
+                                p = Page.createEmptyLeaf(map);
+                            }
+                            return new CursorPos<>(p, 0, pos);
+                        }
+                    }
+                    p = p.copy();
+                    p.remove(index);
+                    return new CursorPos<>(p, 0, pos);
+                }
+                case PUT: {
+                    int unsavedMemory = 0;
+                    V value = selectValue(result, providedValue);
+                    p = p.copy();
+                    if (index < 0) {
+                        p.insertLeaf(-index - 1, key, value);
+                        int keyCount;
+                        MVStore store = map.store;
+                        while ((keyCount = p.getKeyCount()) > store.getKeysPerPage()
+                                || p.getMemory() > store.getMaxPageSize()
+                                && keyCount > (p.isLeaf() ? 1 : 2)) {
+                            long totalCount = p.getTotalCount();
+                            int at = keyCount >> 1;
+                            K k = p.getKey(at);
+                            Page<K,V> split = p.split(at);
+                            unsavedMemory += p.getMemory() + split.getMemory();
+                            // if root was split, create a new root with two children (increase tree height)
+                            if (pos == null) {
+                                K[] keys = p.createKeyStorage(1);
+                                keys[0] = k;
+                                Page.PageReference<K,V>[] children = Page.createRefStorage(2);
+                                children[0] = new Page.PageReference<>(p);
+                                children[1] = new Page.PageReference<>(split);
+                                p = Page.createNode(map, keys, children, totalCount, 0);
+                                return new CursorPos<>(p, unsavedMemory, pos);
+                            }
+                            Page<K,V> c = p;
+                            p = pos.page;
+                            index = pos.index;
+                            pos = pos.parent;
+                            p = p.copy();
+                            p.setChild(index, split);
+                            p.insertNode(index, k, c);
+                        }
+                    } else {
+                        p.setValue(index, value);
+                    }
+                    return new CursorPos<>(p, unsavedMemory, pos);
+                }
+                case ABORT:
+                    return tip;
+                case REPEAT:
+                default:
+                    return null;
+            }
+        }
+
+        /**
+         * Makes entry-level decision about how to proceed with the update.
          *
          * @param existingValue the old value
          * @param providedValue the new value
@@ -1720,6 +1855,12 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
          * so we can re-start update process.
          */
         public void reset() {}
+
+        /**
+         * DecisionMaker gets notified when proposed updated page was successfully injected into the B-tree
+         * to provide opportunity for internal state maintance.
+         */
+        public void onPageReplaced() {}
     }
 
     /**
@@ -1730,135 +1871,53 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
      * @param decisionMaker command object to make choices during transaction.
      * @return previous value, if mapping for that key existed, or null otherwise
      */
-    public V operate(K key, V value, DecisionMaker<? super V> decisionMaker) {
+    public V operate(K key, V value, DecisionMaker<V> decisionMaker) {
+        CursorPos<K,V> tip = null;
         IntValueHolder unsavedMemoryHolder = new IntValueHolder();
-        int attempt = 0;
-        while(true) {
+        for (int attempt = 0;; decisionMaker.reset()) {
             RootReference<K,V> rootReference = flushAndGetRoot();
             boolean locked = rootReference.isLockedByCurrentThread();
+            assert attempt > 0 || !locked : attempt + " " + rootReference;
             if (!locked) {
                 if (attempt++ == 0) {
                     beforeWrite();
                 }
-                if (attempt > 3 || rootReference.isLocked()) {
+                if (attempt > 5 || rootReference.isLocked()) {
                     rootReference = lockRoot(rootReference, attempt);
                     locked = true;
                 }
             }
             Page<K,V> rootPage = rootReference.root;
             long version = rootReference.version;
-            CursorPos<K,V> tip;
-            V result;
-            unsavedMemoryHolder.value = 0;
             try {
-                CursorPos<K,V> pos = CursorPos.traverseDown(rootPage, key);
+                tip = CursorPos.traverseDown(rootPage, key, tip);
                 if (!locked && rootReference != getRoot()) {
                     continue;
                 }
-                Page<K,V> p = pos.page;
-                int index = pos.index;
-                tip = pos;
-                pos = pos.parent;
-                result = index < 0 ? null : p.getValue(index);
-                Decision decision = decisionMaker.decide(result, value, tip);
-
-                switch (decision) {
-                    case REPEAT:
-                        decisionMaker.reset();
+                CursorPos<K,V> cp = decisionMaker.decide(tip, key, value);
+                if (cp == null) {
+                    continue;
+                } else if (cp == tip) {
+                    if (!locked && rootReference != getRoot()) {
                         continue;
-                    case ABORT:
-                        if (!locked && rootReference != getRoot()) {
-                            decisionMaker.reset();
+                    }
+                } else {
+                    unsavedMemoryHolder.value = cp.index;
+                    rootPage = replacePage(cp.parent, cp.page, unsavedMemoryHolder);
+                    if (!locked) {
+                        rootReference = rootReference.updateRootPage(rootPage, attempt);
+                        if (rootReference == null) {
                             continue;
                         }
-                        return result;
-                    case REMOVE: {
-                        if (index < 0) {
-                            if (!locked && rootReference != getRoot()) {
-                                decisionMaker.reset();
-                                continue;
-                            }
-                            return null;
-                        }
-
-                        if (p.getTotalCount() == 1 && pos != null) {
-                            int keyCount;
-                            do {
-                                p = pos.page;
-                                index = pos.index;
-                                pos = pos.parent;
-                                keyCount = p.getKeyCount();
-                                // condition below should always be false, but older
-                                // versions (up to 1.4.197) may create
-                                // single-childed (with no keys) internal nodes,
-                                // which we skip here
-                            } while (keyCount == 0 && pos != null);
-
-                            if (keyCount <= 1) {
-                                if (keyCount == 1) {
-                                    assert index <= 1;
-                                    p = p.getChildPage(1 - index);
-                                } else {
-                                    // if root happens to be such single-childed
-                                    // (with no keys) internal node, then just
-                                    // replace it with empty leaf
-                                    p = Page.createEmptyLeaf(this);
-                                }
-                                break;
-                            }
-                        }
-                        p = p.copy();
-                        p.remove(index);
-                        break;
                     }
-                    case PUT: {
-                        value = decisionMaker.selectValue(result, value);
-                        p = p.copy();
-                        if (index < 0) {
-                            p.insertLeaf(-index - 1, key, value);
-                            int keyCount;
-                            while ((keyCount = p.getKeyCount()) > store.getKeysPerPage()
-                                    || p.getMemory() > store.getMaxPageSize()
-                                    && keyCount > (p.isLeaf() ? 1 : 2)) {
-                                long totalCount = p.getTotalCount();
-                                int at = keyCount >> 1;
-                                K k = p.getKey(at);
-                                Page<K,V> split = p.split(at);
-                                unsavedMemoryHolder.value += p.getMemory() + split.getMemory();
-                                if (pos == null) {
-                                    K[] keys = p.createKeyStorage(1);
-                                    keys[0] = k;
-                                    Page.PageReference<K,V>[] children = Page.createRefStorage(2);
-                                    children[0] = new Page.PageReference<>(p);
-                                    children[1] = new Page.PageReference<>(split);
-                                    p = Page.createNode(this, keys, children, totalCount, 0);
-                                    break;
-                                }
-                                Page<K,V> c = p;
-                                p = pos.page;
-                                index = pos.index;
-                                pos = pos.parent;
-                                p = p.copy();
-                                p.setChild(index, split);
-                                p.insertNode(index, k, c);
-                            }
-                        } else {
-                            p.setValue(index, value);
-                        }
-                        break;
+                    if (isPersistent()) {
+                        registerUnsavedMemory(unsavedMemoryHolder.value + tip.processRemovalInfo(version));
                     }
+                    decisionMaker.onPageReplaced();
                 }
-                rootPage = replacePage(pos, p, unsavedMemoryHolder);
-                if (!locked) {
-                    rootReference = rootReference.updateRootPage(rootPage, attempt);
-                    if (rootReference == null) {
-                        decisionMaker.reset();
-                        continue;
-                    }
-                }
-                if (isPersistent()) {
-                    registerUnsavedMemory(unsavedMemoryHolder.value + tip.processRemovalInfo(version));
-                }
+                Page<K,V> p = tip.page;
+                int index = tip.index;
+                V result = index < 0 ? null : p.getValue(index);
                 return result;
             } finally {
                 if(locked) {
@@ -1878,6 +1937,8 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         }
     }
 
+    private static final int CPU_COUNT = Runtime.getRuntime().availableProcessors();
+
     /**
      * Try to lock the root.
      *
@@ -1893,23 +1954,18 @@ public class MVMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V
         assert !rootReference.isLockedByCurrentThread() : rootReference;
         RootReference<K,V> oldRootReference = rootReference.previous;
 
-        if(attempt > 4) {
-            int contention = estimateContention(rootReference, oldRootReference);
-            if (attempt <= 12) {
+        if (attempt < CPU_COUNT) {
+            Thread.onSpinWait();
+        } else {
+            int estimatedContention = estimateContention(rootReference, oldRootReference);
+            if (attempt < CPU_COUNT + (CPU_COUNT + estimatedContention) / 2) {
                 Thread.yield();
-            } else if (attempt <= 70 - 2 * contention) {
-                try {
-                    Thread.sleep(contention);
-                } catch (InterruptedException ex) {
-                    throw new RuntimeException(ex);
-                }
             } else {
                 synchronized (lock) {
                     notificationRequested = true;
                     try {
-                        lock.wait(5);
-                    } catch (InterruptedException ignore) {
-                    }
+                        lock.wait(1);
+                    } catch (InterruptedException ignore) {/**/}
                 }
             }
         }

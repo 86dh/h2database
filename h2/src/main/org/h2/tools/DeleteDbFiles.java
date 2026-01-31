@@ -41,6 +41,11 @@ public class DeleteDbFiles extends Tool {
         new DeleteDbFiles().runTool(args);
     }
 
+    /**
+     * Creates default instance
+     */
+    public DeleteDbFiles() {}
+
     @Override
     public void runTool(String... args) throws SQLException {
         String dir = ".";

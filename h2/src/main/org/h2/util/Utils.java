@@ -751,17 +751,21 @@ public class Utils {
         return time;
     }
 
+    public static final ThreadGroup H2_THREAD_GROUP = new ThreadGroup("H2-background");
+
     public static ThreadPoolExecutor createSingleThreadExecutor(String threadName) {
         return createSingleThreadExecutor(threadName, new LinkedBlockingQueue<>());
     }
 
     public static ThreadPoolExecutor createSingleThreadExecutor(String threadName, BlockingQueue<Runnable> workQueue) {
         return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, workQueue,
-                                        r -> {
-                                            Thread thread = new Thread(r, threadName);
-                                            thread.setDaemon(true);
-                                            return thread;
-                                        });
+                                        r -> createBackgroundThread(threadName, r));
+    }
+
+    public static Thread createBackgroundThread(String threadName, Runnable r) {
+        Thread thread = new Thread(H2_THREAD_GROUP, r, threadName);
+        thread.setDaemon(true);
+        return thread;
     }
 
     /**
@@ -791,6 +795,10 @@ public class Utils {
                 executor.awaitTermination(1, TimeUnit.DAYS);
             } catch (InterruptedException ignore) {/**/}
         }
+    }
+
+    public static boolean isBackgroundThread() {
+        return Thread.currentThread().getThreadGroup() == H2_THREAD_GROUP;
     }
 
     /**
